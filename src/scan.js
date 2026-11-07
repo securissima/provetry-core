@@ -71,6 +71,8 @@ export async function scan(ctx, components, opts = {}) {
         fixed: [...new Set(g.records.flatMap((r) => fixedVersions(r, c.purl)))],
         exploited: kevHit || euHit ? { kev: kevHit, euvd: euHit } : null,
         detailsMissing: g.records.every((r) => missingDetails.has(r.id)),
+        // The OSV records behind it (their own ids, stable even when an advisory's aliases change).
+        records: g.records.map((r) => r.id).sort(),
         url: `https://osv.dev/vulnerability/${encodeURIComponent(g.records[0].id)}`,
         vex: null,
       };

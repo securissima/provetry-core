@@ -81,6 +81,7 @@ test('scan: exploited first, duplicates merged, dev dependencies left out', asyn
   const reqs = r.findings.find((f) => f.component.name === 'requests');
   assert.deepEqual(reqs.ids, ['CVE-2024-35195', 'GHSA-9wx4-h78v-vm56', 'PYSEC-2024-60']);
   assert.deepEqual(reqs.fixed, ['2.32.0']);
+  assert.deepEqual(reqs.records, ['GHSA-9wx4-h78v-vm56', 'PYSEC-2024-60']);
   assert.equal(r.findings.find((f) => f.component.name === 'axios').severity, 'medium');
   assert.ok(!r.findings.some((f) => f.component.name === 'phpunit/phpunit'));
   assert.deepEqual(r.counts, { exploited: 1, critical: 0, high: 1, medium: 2, low: 0, unknown: 1 });
