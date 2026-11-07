@@ -1,0 +1,6 @@
+{
+  "name": "web",
+  "private": true,
+  "dependencies": { "express": "^4.19.2", "axios": "^1.6.0", "@babel/core": "^7.24.0" },
+  "devDependencies": { "vitest": "^1.6.0", "typescript": "^5.0.0" }
+}

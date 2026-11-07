@@ -1,0 +1,6 @@
+# pinned
+Django==4.2.0 --hash=sha256:ad33ed68db9398f5dfb33282704925bce044bef4261cd4fb59e4e7f9ae505a78
+requests[socks]==2.31.0
+flask>=2.0
+-r other.txt
+PyYAML===6.0.1  # comment
