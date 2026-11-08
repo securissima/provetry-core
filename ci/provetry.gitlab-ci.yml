@@ -10,13 +10,13 @@ provetry:
   rules:
     - if: $CI_COMMIT_TAG
   variables:
-    # Pinned: this code receives your API key. Move to a newer release of provetry-core deliberately.
-    PROVETRY_REF: v0.2.0
+    # Pinned to a commit (version 0.2.0): this code receives your API key. Move to a newer one deliberately.
+    PROVETRY_REF: b719e1017fe24fbb94ac5c05fd4a58db87a93599
     PROVETRY_FAIL_ON: none
     PROVETRY_APP_URL: https://app.provetry.com
   script:
     - set -euo pipefail
-    - git clone --depth 1 --branch "$PROVETRY_REF" https://github.com/Enigmacker/provetry-core.git /tmp/provetry
+    - git init -q /tmp/provetry && git -C /tmp/provetry fetch -q --depth 1 https://github.com/Enigmacker/provetry-core.git "$PROVETRY_REF" && git -C /tmp/provetry checkout -q FETCH_HEAD
     - VERSION="${CI_COMMIT_TAG#v}"
     - node /tmp/provetry/src/cli.js sbom . --name "$CI_PROJECT_NAME" --version "$VERSION" --out sbom.cdx.json
     - |
