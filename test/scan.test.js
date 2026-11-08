@@ -44,7 +44,7 @@ const DETAILS = {
   },
 };
 
-function fakeFetch({ euvdStatus = 200, calls = [] } = {}) {
+function fakeFetch({ euvdStatus = 200, epssStatus = 200, calls = [] } = {}) {
   return async (url, opts = {}) => {
     calls.push(url);
     if (url.endsWith('/querybatch')) {
@@ -59,6 +59,12 @@ function fakeFetch({ euvdStatus = 200, calls = [] } = {}) {
     if (url.includes('euvdservices')) {
       return euvdStatus === 200 ? { status: 200, json: { items: [{ id: 'EUVD-2023-48495', aliases: 'CVE-2023-44487\nGHSA-qppj-fm5r-hxr3\n', exploitedSince: 'Oct 10, 2023' }], total: 1 } } : { status: euvdStatus, json: null };
     }
+    if (url.includes('api.first.org/data/v1/epss')) {
+      if (epssStatus !== 200) return { status: epssStatus, json: null };
+      const asked = new URL(url).searchParams.get('cve').split(',');
+      const scores = { 'CVE-2023-45857': ['0.42', '0.97'], 'CVE-2021-23337': ['0.0123', '0.79'], 'CVE-2023-44487': ['0.94', '0.999'] };
+      return { status: 200, json: { data: asked.filter((c) => scores[c]).map((c) => ({ cve: c, epss: scores[c][0], percentile: scores[c][1], date: '2026-11-07' })) } };
+    }
     throw new Error(`unexpected ${url}`);
   };
 }
@@ -69,12 +75,15 @@ test('scan: exploited first, duplicates merged, dev dependencies left out', asyn
   const { components } = await collect(root);
   const r = await scan(ctxOf(), components, { product: { name: 'demo' } });
   assert.equal(r.complete, true);
-  assert.deepEqual(r.sources.map((s) => s.ok), [true, true, true]);
-  assert.deepEqual(r.findings.map((f) => f.id), ['CVE-2023-44487', 'CVE-2021-23337', 'CVE-2024-35195', 'CVE-2023-45857']);
+  assert.deepEqual(r.sources.map((s) => s.ok), [true, true, true, true]);
+  // Exploited first; then likely to be exploited (axios, EPSS 42%) before a higher severity that is not.
+  assert.deepEqual(r.findings.map((f) => f.id), ['CVE-2023-44487', 'CVE-2023-45857', 'CVE-2021-23337', 'CVE-2024-35195']);
+  assert.deepEqual(r.findings[1].epss, { cve: 'CVE-2023-45857', score: 0.42, percentile: 0.97, date: '2026-11-07' });
+  assert.equal(r.findings.find((f) => f.component.name === 'requests').epss, null, 'no score: nothing invented');
   const go = r.findings[0];
   assert.ok(go.exploited.kev && go.exploited.euvd, 'KEV and EUVD both flag it through its aliases');
   assert.equal(go.severity, 'unknown');
-  const lodash = r.findings[1];
+  const lodash = r.findings[2];
   assert.equal(lodash.severity, 'high');
   assert.equal(lodash.score, 7.2);
   assert.deepEqual(lodash.fixed, ['4.17.21']);
@@ -193,4 +202,14 @@ test('terminal output strips escape sequences from advisory text', () => {
     findings: [{ id: 'X-1', ids: ['X-1'], summary: 'bad\u001b[2J\u001b]0;pwned\u0007 text', component: { name: 'p', version: '1', direct: true, sources: [] }, severity: 'high', score: null, fixed: [], exploited: null, url: 'u' }] };
   assert.ok(!/[\u001b\u0007]/.test(toText(r)));
   assert.ok(!/[\u001b\u0007]/.test(toMarkdown(r)));
+});
+
+test('scan: EPSS down is only a missing ranking aid, the scan stays complete', async () => {
+  const { components } = await collect(root);
+  const r = await scan(ctxOf({ epssStatus: 503 }), components);
+  assert.equal(r.complete, true);
+  assert.equal(r.sources.find((s) => s.name === 'FIRST EPSS').ok, false);
+  assert.ok(r.findings.every((f) => f.epss === null));
+  const off = await scan(ctxOf(), components, { epss: false });
+  assert.ok(!off.sources.some((s) => s.name === 'FIRST EPSS'));
 });

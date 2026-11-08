@@ -9,6 +9,8 @@ export { reportingClock } from './clock.js';
 export { reach, fromGovulncheck, mergeReach, canonicalPurl } from './reach.js';
 export { toText, toMarkdown, toJson, toSarif } from './report.js';
 export { cvss3Score } from './vuln/cvss.js';
+export { loadEpss, epssOf, EPSS_LIKELY } from './vuln/epss.js';
+export { endOfLife, cycleOf, purlBase } from './vuln/eol.js';
 export { memoryCache, fileCache } from './cache.js';
 export { fetchJson } from './net.js';
 export { VERSION } from './version.js';

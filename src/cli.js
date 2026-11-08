@@ -10,6 +10,7 @@ import { scan, reachesThreshold } from './scan.js';
 import { readVex, vexTemplate } from './vex.js';
 import { reportingClock } from './clock.js';
 import { reach } from './reach.js';
+import { endOfLife } from './vuln/eol.js';
 import { toText, toMarkdown, toJson, toSarif, clockText } from './report.js';
 import { defaultContext } from './net.js';
 import { VERSION } from './version.js';
@@ -20,6 +21,7 @@ Usage
   provetry sbom  [dir]            Write an SBOM from the lock files found in dir (default: .)
   provetry scan  [dir|sbom.json]  List known vulnerabilities, those exploited in the wild first
   provetry reach [dir]            Which vulnerabilities are really called by your code (Go, with govulncheck)
+  provetry eol   [dir|sbom.json]  Components whose support ends, before your own support period does
   provetry clock --since <date>   Article 14 reporting deadlines from the moment you became aware
 
 sbom options
@@ -37,6 +39,7 @@ scan options
   --fail-on <level>         exit 1 if a finding reaches: exploited|critical|high|medium|low|any
   --include-dev             also scan development dependencies
   --no-euvd                 skip the ENISA EUVD lookup
+  --no-epss                 skip the FIRST EPSS lookup (likelihood of exploitation, used to sort)
   --offline                 use cached data only, make no network request
   --no-cache                neither read nor write the cache
 
@@ -44,6 +47,11 @@ reach options
   --out <file>              write the OpenVEX document to a file (default: standard output)
   --product <purl>          how the document names your product (default: pkg:generic/<dir name>)
   --govulncheck <path>      the govulncheck binary (default: govulncheck on the PATH)
+
+eol options
+  --support-until <date>    end of your product's support period (YYYY-MM-DD): flags earlier ends
+  --json                    machine-readable output
+  --offline, --no-cache     as for scan
 
 clock options
   --since <date>            when you became aware (ISO 8601, e.g. 2026-11-07T09:30:00Z)
@@ -136,6 +144,7 @@ export async function main(argv) {
         'fail-on': { type: 'string' },
         'include-dev': { type: 'boolean', default: false },
         'no-euvd': { type: 'boolean', default: false },
+        'no-epss': { type: 'boolean', default: false },
         offline: { type: 'boolean', default: false },
         'no-cache': { type: 'boolean', default: false },
         name: { type: 'string' },
@@ -163,6 +172,7 @@ export async function main(argv) {
       vex,
       includeDev: values['include-dev'],
       euvd: !values['no-euvd'],
+      epss: !values['no-epss'],
     });
     if (errors.length) {
       result.complete = false;
@@ -200,6 +210,37 @@ export async function main(argv) {
     const n = (s) => r.doc.statements.filter((x) => x.status === s).length;
     process.stderr.write(`provetry: ${r.modules.length} Go module${r.modules.length > 1 ? 's' : ''} checked: ${n('affected')} vulnerable function${n('affected') === 1 ? '' : 's'} called, ${n('not_affected')} not called\n`);
     if (r.errors.length) process.exitCode = 2;
+    return;
+  }
+
+  if (cmd === 'eol') {
+    const { values, positionals } = parseArgs({
+      args: rest,
+      allowPositionals: true,
+      options: { 'support-until': { type: 'string' }, json: { type: 'boolean', default: false }, offline: { type: 'boolean', default: false }, 'no-cache': { type: 'boolean', default: false }, 'include-dev': { type: 'boolean', default: false } },
+    });
+    const until = values['support-until'];
+    if (until && !/^\d{4}-\d{2}-\d{2}$/.test(until)) fail('--support-until needs a date, for example 2031-12-31');
+    if (values.offline && values['no-cache']) fail('--offline needs the cache');
+    const { components } = await loadComponents(positionals[0] ?? '.');
+    const ctx = await defaultContext({ cache: !values['no-cache'] });
+    ctx.offline = values.offline;
+    let r;
+    try {
+      r = await endOfLife(ctx, components.filter((c) => values['include-dev'] || c.scope !== 'dev'), { supportUntil: until ?? null });
+    } catch (e) {
+      fail(`endoflife.date unavailable (${e.code ?? e.message})`);
+    }
+    if (values.json) return void process.stdout.write(JSON.stringify(r, null, 2) + '\n');
+    const out = [`${r.known} of ${r.checked} components have a published support policy on endoflife.date.`, ''];
+    for (const x of r.results) {
+      const when = x.eolFrom ? (x.isEol ? `support ended ${x.eolFrom}` : `support ends ${x.eolFrom}`) : x.isEol ? 'no longer supported' : 'end of support not announced';
+      out.push(clean(`${x.isEol ? '!! ' : x.beforeSupportEnd ? '!  ' : '   '}${x.name}@${x.version}  ${x.label} ${x.cycle}: ${when}${x.beforeSupportEnd && !x.isEol ? ', before your own support period ends' : ''}${x.latest ? ` (latest ${x.latest})` : ''}`));
+    }
+    if (!r.results.length) out.push('Nothing to report for the components it knows.');
+    if (!until) out.push('', 'Add --support-until <date> to flag components whose support ends before yours.');
+    process.stdout.write(out.join('\n') + '\n');
+    if (r.results.some((x) => x.isEol || x.beforeSupportEnd)) process.exitCode = 1;
     return;
   }
 

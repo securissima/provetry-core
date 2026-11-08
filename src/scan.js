@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Puts it together: components (from lock files or an SBOM) → known vulnerabilities (OSV) → which of them are
-// exploited in the wild (CISA KEV, ENISA EUVD) → your VEX statements → a prioritized list.
+// exploited in the wild (CISA KEV, ENISA EUVD) → how likely the others are to be (FIRST EPSS) → your VEX
+// statements → a prioritized list.
 import { queryPurls, loadDetails, groupRecords, severityOf, fixedVersions } from './vuln/osv.js';
 import { loadKev } from './vuln/kev.js';
 import { loadEuvdExploited } from './vuln/euvd.js';
+import { loadEpss, epssOf, EPSS_LIKELY } from './vuln/epss.js';
 import { vexFor } from './vex.js';
 
 const RANK = { critical: 4, high: 3, medium: 2, low: 1, none: 0, unknown: 0 };
@@ -11,10 +13,10 @@ const RANK = { critical: 4, high: 3, medium: 2, low: 1, none: 0, unknown: 0 };
 /**
  * @param {object} ctx { fetchJson, cache, offline?, now? }
  * @param {import('./lockfiles/index.js').Component[]} components
- * @param {{ product?: { name: string, version?: string }, vex?: object[], includeDev?: boolean, euvd?: boolean }} [opts]
+ * @param {{ product?: { name: string, version?: string }, vex?: object[], includeDev?: boolean, euvd?: boolean, epss?: boolean }} [opts]
  */
 export async function scan(ctx, components, opts = {}) {
-  const { vex = [], includeDev = false, euvd = true } = opts;
+  const { vex = [], includeDev = false, euvd = true, epss: withEpss = true } = opts;
   const now = ctx.now?.() ?? new Date();
   const scanned = components.filter((c) => includeDev || c.scope !== 'dev');
   const sources = [];
@@ -47,6 +49,18 @@ export async function scan(ctx, components, opts = {}) {
     }
   }
 
+  let epss = new Map();
+  if (withEpss) {
+    const cves = [...details.values()].flatMap((r) => [r.id, ...(r.aliases ?? [])]);
+    try {
+      epss = await loadEpss(ctx, cves);
+      sources.push({ name: 'FIRST EPSS', ok: true });
+    } catch (e) {
+      // Only a ranking aid: without it nothing is missed, so the scan is still complete.
+      sources.push({ name: 'FIRST EPSS', ok: false, optional: true, note: e.code ?? e.message });
+    }
+  }
+
   const findings = [];
   const suppressed = [];
   for (const c of scanned) {
@@ -70,6 +84,7 @@ export async function scan(ctx, components, opts = {}) {
         vector: sev.vector,
         fixed: [...new Set(g.records.flatMap((r) => fixedVersions(r, c.purl)))],
         exploited: kevHit || euHit ? { kev: kevHit, euvd: euHit } : null,
+        epss: epssOf(epss, g.ids),
         detailsMissing: g.records.every((r) => missingDetails.has(r.id)),
         // The OSV records behind it (their own ids, stable even when an advisory's aliases change).
         records: g.records.map((r) => r.id).sort(),
@@ -93,16 +108,20 @@ export async function scan(ctx, components, opts = {}) {
     product: opts.product ?? null,
     components: { total: components.length, scanned: scanned.length, devExcluded: components.length - scanned.length },
     sources,
-    complete: sources.every((s) => s.ok) && missingDetails.size === 0,
+    complete: sources.every((s) => s.ok || s.optional) && missingDetails.size === 0,
     counts,
     findings,
     suppressed,
   };
 }
 
+const likely = (f) => (f.epss?.score ?? 0) >= EPSS_LIKELY;
+
+/** Exploited first, then likely to be exploited (EPSS ≥ 10%), then by severity. */
 export function compareFindings(a, b) {
   return (
     Number(!!b.exploited) - Number(!!a.exploited) ||
+    Number(likely(b)) - Number(likely(a)) ||
     RANK[b.severity] - RANK[a.severity] ||
     (b.score ?? -1) - (a.score ?? -1) ||
     Number(b.component.direct) - Number(a.component.direct) ||

@@ -26,6 +26,7 @@ Free, open source, no account, no telemetry, no dependency. Node.js 22 or later.
 - [Vulnerability scan](#vulnerability-scan)
 - [VEX: saying what does not affect you](#vex-saying-what-does-not-affect-you)
 - [Reachability: is the vulnerable code called?](#reachability-is-the-vulnerable-code-called)
+- [End of life of your components](#end-of-life-of-your-components)
 - [Article 14 reporting clock](#article-14-reporting-clock)
 - [Using it in CI](#using-it-in-ci)
 - [Privacy: which services see what](#privacy-which-services-see-what)
@@ -94,7 +95,7 @@ The CRA does not require you to publish the SBOM: it belongs in your technical d
 ```sh
 provetry scan [dir | sbom.json] [--format text|markdown|json|sarif] [--out <file>]
               [--vex <file>]... [--vex-template <file>] [--fail-on <level>]
-              [--include-dev] [--no-euvd] [--offline] [--no-cache]
+              [--include-dev] [--no-euvd] [--no-epss] [--offline] [--no-cache]
 ```
 
 Sources, all free and public:
@@ -104,12 +105,13 @@ Sources, all free and public:
 | [OSV.dev](https://osv.dev) | Known vulnerabilities per package version, fixed versions, severity. OSV aggregates the GitHub advisories, PyPA, the Go and Rust advisory databases, RubySec and others. |
 | [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) | Vulnerabilities confirmed exploited in the wild, and those used in ransomware campaigns. |
 | [ENISA EUVD](https://euvd.enisa.europa.eu) | The European database's list of exploited vulnerabilities. Best effort: the service publishes no stability guarantee, and a scan carries on without it, saying so. |
+| [FIRST EPSS](https://www.first.org/epss/) | For CVEs not exploited yet: the probability, recomputed daily, that one is exploited in the next 30 days. A sorting aid only: without it nothing is missed, so a scan stays complete when it is down. |
 
-How findings are ranked: exploited in the wild first, then by severity (the highest CVSS 3.x base score the advisories carry, else the severity the advisory states), then direct dependencies before transitive ones. One vulnerability published by several databases (a GitHub advisory and a PyPI advisory for the same CVE) is shown once, with all its identifiers.
+How findings are ranked: exploited in the wild first, then those likely to be exploited soon (EPSS of 10% or more, a small minority of CVEs), then by severity (the highest CVSS 3.x base score the advisories carry, else the severity the advisory states), then direct dependencies before transitive ones. One vulnerability published by several databases (a GitHub advisory and a PyPI advisory for the same CVE) is shown once, with all its identifiers.
 
 When a source cannot be reached, the report says the result is incomplete. If OSV itself cannot be reached, or a lock file cannot be read, the exit code is 2. With `--fail-on`, any incomplete result exits 2 too: a CI gate never passes on missing data.
 
-Public data is cached in `~/.cache/provetry` (or `$PROVETRY_CACHE_DIR`), so repeated scans are quick: OSV answers per package for 6 hours, advisories for 30 days (keyed by their last modification), the KEV and EUVD lists for 24 hours. File names are hashes; the only trace of your project is which package versions were looked up. `--offline` answers from that cache only.
+Public data is cached in `~/.cache/provetry` (or `$PROVETRY_CACHE_DIR`), so repeated scans are quick: OSV answers per package for 6 hours, advisories for 30 days (keyed by their last modification), the KEV and EUVD lists and EPSS scores for 24 hours. File names are hashes; the only trace of your project is which package versions were looked up. `--offline` answers from that cache only.
 
 ## VEX: saying what does not affect you
 
@@ -135,6 +137,16 @@ provetry scan . --vex reach.vex.json
 What it cannot see, and the document says so: calls through reflection, cgo or plugins, and code built only for other platforms or build tags than the ones it ran with. The Go standard library is left out (govulncheck checks the Go that runs it, not necessarily the one that builds your product). Reachability is about your source code: when you describe a container image, other binaries in it are not covered.
 
 Other ecosystems have no tool of that precision yet; Provetry does not guess for them.
+
+## End of life of your components
+
+```sh
+provetry eol [dir | sbom.json] [--support-until 2031-12-31] [--json] [--offline] [--no-cache]
+```
+
+You must handle the vulnerabilities of your product for its whole support period (CRA, Article 13(8)), and exercise due diligence on the components you integrate (Article 13(5)). A component whose own support ends before yours will stop getting security fixes while you still owe them. `provetry eol` looks your components up on [endoflife.date](https://endoflife.date), finds the release cycle of each version, and flags those already unsupported (`!!`) or whose support ends before the date you give (`!`). Exit code 1 when one is flagged.
+
+Only components endoflife.date knows by package URL are checked: frameworks, runtimes and databases mostly, not small libraries without a published support policy. Nothing is guessed for the others.
 
 ## Article 14 reporting clock
 
@@ -213,8 +225,10 @@ npx -y github:Enigmacker/provetry-core scan sbom.cdx.json --format sarif --out p
 | OSV.dev (Google) | The package URLs of your components (name and version). |
 | CISA | A download of the public KEV catalogue. Nothing about you. |
 | ENISA | A download of the public list of exploited vulnerabilities. Nothing about you. |
+| FIRST | The CVE identifiers found in your components, to get their EPSS scores. |
+| endoflife.date | A download of its list of package URLs, then the names of the products found among your components (`provetry eol` only). |
 
-Your source code and lock files never leave your machine. `--no-euvd` skips ENISA; `--offline` sends nothing.
+Your source code and lock files never leave your machine. `--no-euvd` skips ENISA, `--no-epss` skips FIRST; `--offline` sends nothing.
 
 ## Limitations
 

@@ -15,6 +15,9 @@ const exploitText = (f) => {
   const by = [f.exploited.kev && `CISA KEV${f.exploited.kev.dateAdded ? ` since ${f.exploited.kev.dateAdded}` : ''}${f.exploited.kev.ransomware ? ', used in ransomware' : ''}`, f.exploited.euvd && `ENISA EUVD${f.exploited.euvd.euvd ? ` ${f.exploited.euvd.euvd}` : ''}`].filter(Boolean);
   return `exploited in the wild (${by.join('; ')})`;
 };
+// EPSS: probability of exploitation in the next 30 days, and the share of scored CVEs below it.
+const pct = (x) => `${(x * 100).toFixed(x < 0.1 ? 2 : 1)}%`;
+const epssText = (f) => (f.epss ? `EPSS ${pct(f.epss.score)} (top ${pct(Math.max(0.0001, 1 - f.epss.percentile))})` : '');
 const compText = (f) => `${f.component.name}@${f.component.version}${f.component.direct ? '' : ' (transitive)'}`;
 
 function header(r) {
@@ -30,7 +33,7 @@ const NEXT_EXPLOITED =
 export function toText(r) {
   const { p, comps } = header(r);
   const out = [`Provetry ${TOOL.version} · ${p} · ${comps}`, ''];
-  for (const s of r.sources) if (!s.ok) out.push(`! ${s.name} unavailable (${s.note}). Results are incomplete.`);
+  for (const s of r.sources) if (!s.ok) out.push(s.optional ? `! ${s.name} unavailable (${s.note}): findings are not ranked by likelihood of exploitation.` : `! ${s.name} unavailable (${s.note}). Results are incomplete.`);
   if (r.sources.some((s) => !s.ok)) out.push('');
   if (!r.findings.length) {
     out.push(r.complete ? 'No known vulnerability in these components.' : 'No known vulnerability found, but some sources could not be checked.');
@@ -40,7 +43,7 @@ export function toText(r) {
     for (const f of r.findings) {
       out.push(clean(`${f.exploited ? '!! ' : ''}${LABEL[f.severity]}${f.score !== null ? ` ${f.score}` : ''}  ${f.id}  ${compText(f)}`));
       if (f.summary) out.push(`   ${clean(f.summary)}`);
-      const extra = [exploitText(f), fixText(f), f.vex ? `VEX: ${f.vex.status}` : '', f.ids.length > 1 ? `also ${f.ids.slice(1).join(', ')}` : ''].filter(Boolean);
+      const extra = [exploitText(f), epssText(f), fixText(f), f.vex ? `VEX: ${f.vex.status}` : '', f.ids.length > 1 ? `also ${f.ids.slice(1).join(', ')}` : ''].filter(Boolean);
       out.push(`   ${clean(extra.join(' · '))}`);
       out.push(`   ${f.url}`, '');
     }
@@ -63,9 +66,9 @@ export function toMarkdown(r) {
   } else {
     const c = r.counts;
     out.push('| Exploited | Critical | High | Medium | Low | Unrated |', '|---|---|---|---|---|---|', `| ${c.exploited} | ${c.critical} | ${c.high} | ${c.medium} | ${c.low} | ${c.unknown} |`, '');
-    out.push('| Vulnerability | Severity | Component | Fix | Exploited |', '|---|---|---|---|---|');
+    out.push('| Vulnerability | Severity | Component | Fix | Exploited | EPSS |', '|---|---|---|---|---|---|');
     for (const f of r.findings) {
-      out.push(`| [${md(f.id)}](${f.url}) | ${LABEL[f.severity]}${f.score !== null ? ` ${f.score}` : ''} | ${code(`${f.component.name}@${f.component.version}`)}${f.component.direct ? '' : ' (transitive)'} | ${md(fixText(f))} | ${f.exploited ? md(exploitText(f).replace(/^exploited in the wild /, '')) : ''} |`);
+      out.push(`| [${md(f.id)}](${f.url}) | ${LABEL[f.severity]}${f.score !== null ? ` ${f.score}` : ''} | ${code(`${f.component.name}@${f.component.version}`)}${f.component.direct ? '' : ' (transitive)'} | ${md(fixText(f))} | ${f.exploited ? md(exploitText(f).replace(/^exploited in the wild /, '')) : ''} | ${f.epss ? pct(f.epss.score) : ''} |`);
     }
     out.push('');
     if (r.counts.exploited) out.push(`> ${NEXT_EXPLOITED}`, '');
@@ -99,7 +102,7 @@ export function toSarif(r, { location = 'sbom.json' } = {}) {
     results.push({
       ruleId: f.id,
       level: f.exploited ? 'error' : SARIF_LEVEL[f.severity],
-      message: { text: `${f.id} in ${compText(f)}: ${[exploitText(f), fixText(f)].filter(Boolean).join('; ')}.` },
+      message: { text: `${f.id} in ${compText(f)}: ${[exploitText(f), epssText(f), fixText(f)].filter(Boolean).join('; ')}.` },
       locations: [{ physicalLocation: { artifactLocation: { uri: file } } }],
       partialFingerprints: { 'provetry/v1': `${f.id}|${f.component.purl}` },
     });
