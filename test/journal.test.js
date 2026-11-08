@@ -4,7 +4,7 @@ import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { canonical, entryHash, verifyChain, verifyTimestamps, readCertificates, GENESIS } from '../src/journal.js';
+import { canonical, entryHash, verifyChain, verifyTimestamps, readCertificates, lateCoverage, GENESIS } from '../src/journal.js';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
@@ -73,4 +73,11 @@ test('timestamps: a real RFC 3161 token, checked for its hash, signature and (wi
   assert.match(verifyTimestamps(entries, [{ seq: 1, hash: h, response: forged }]).broken.reason, /unreadable|no token/);
   const tampered = Buffer.from(token, 'base64'); tampered[tampered.length - 10] ^= 1;
   assert.match(verifyTimestamps(entries, [{ seq: 1, hash: h, response: tampered.toString('base64') }]).broken.reason, /signature/);
+});
+
+test('timestamps: entries first covered long after the time they give are pointed out', () => {
+  const e = (seq, at) => ({ seq, at });
+  const entries = [e(1, '2026-01-01T10:00:00Z'), e(2, '2026-01-01T11:00:00Z'), e(3, '2026-03-01T09:00:00Z')];
+  assert.deepEqual(lateCoverage(entries, [{ seq: 2, genTime: '2026-01-02T00:00:00Z' }, { seq: 3, genTime: '2026-03-02T00:00:00Z' }]), []);
+  assert.deepEqual(lateCoverage(entries, [{ seq: 3, genTime: '2026-03-02T00:00:00Z' }]), [{ from: 1, to: 2, stampedAt: '2026-03-02T00:00:00Z' }]);
 });

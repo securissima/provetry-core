@@ -11,7 +11,7 @@ import { readVex, vexTemplate } from './vex.js';
 import { reportingClock } from './clock.js';
 import { reach } from './reach.js';
 import { endOfLife } from './vuln/eol.js';
-import { verifyChain, verifyTimestamps, readCertificates } from './journal.js';
+import { verifyChain, verifyTimestamps, readCertificates, lateCoverage } from './journal.js';
 import { toText, toMarkdown, toJson, toSarif, clockText } from './report.js';
 import { defaultContext } from './net.js';
 import { VERSION } from './version.js';
@@ -294,7 +294,11 @@ export async function main(argv) {
       if (trust) process.stdout.write('The signing certificates chain to the authority certificate given (--tsa-ca).\n');
       else process.stdout.write(`Who signed is not checked: give the authority's CA certificate with --tsa-ca <file> (or: openssl ts -verify -digest ${ts.find((t) => Number(t.seq) === last.seq).hash} -in <token> -CAfile <its CA certificate>).\n`);
     }
-    if (!trust && !values.head.length) process.stdout.write('Without a hash kept outside the service (--head) or a timestamp checked against the authority (--tsa-ca), a journal rewritten from the start would also pass.\n');
+    for (const l of lateCoverage(doc.entries, tsCheck.checked)) {
+      process.stdout.write(`Note: entr${l.from === l.to ? `y ${l.from} was` : `ies ${l.from}-${l.to} were`} first timestamped on ${l.stampedAt}, more than two days after the time given: written, or rewritten, later than it says.\n`);
+    }
+    // Tokens prove when the latest entries existed, not that the history before the oldest token is older.
+    if (!values.head.length) process.stdout.write('Without a hash kept outside the service (--head), a journal rewritten from the start, then timestamped again, would also pass.\n');
     if (doc.head && doc.head !== head) process.stdout.write('Note: the "head" field of the file does not match its last entry.\n');
     return;
   }

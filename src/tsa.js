@@ -76,16 +76,20 @@ const OID_CONTENT_TYPE = '1.2.840.113549.1.9.3';
 const OID_MESSAGE_DIGEST = '1.2.840.113549.1.9.4';
 const EKU_TIMESTAMPING = '1.3.6.1.5.5.7.3.8';
 
-/** Does `cert` chain, through `pool`, to one of `anchors`? (A few levels, no loops.) */
-function chainsTo(cert, pool, anchors, depth = 0) {
-  if (depth > 4) return false;
+/**
+ * Does `cert` chain, through `pool`, to one of `anchors`? Intermediates must be CAs valid at `at`; each
+ * certificate is visited once (a hostile token cannot make the search blow up).
+ */
+function chainsTo(cert, pool, anchors, at, seen = new Set()) {
+  if (seen.size > 8) return false;
+  seen.add(cert.fingerprint256);
   for (const a of anchors) {
     if (a.fingerprint256 === cert.fingerprint256) return true;
     if (cert.checkIssued(a) && cert.verify(a.publicKey)) return true;
   }
   for (const p of pool) {
-    if (p.fingerprint256 === cert.fingerprint256) continue;
-    if (p.ca && cert.checkIssued(p) && cert.verify(p.publicKey) && chainsTo(p, pool.filter((x) => x !== p), anchors, depth + 1)) return true;
+    if (seen.has(p.fingerprint256) || !p.ca || at < new Date(p.validFrom) || at > new Date(p.validTo)) continue;
+    if (cert.checkIssued(p) && cert.verify(p.publicKey) && chainsTo(p, pool, anchors, at, seen)) return true;
   }
   return false;
 }
@@ -154,13 +158,15 @@ export function checkTimeStampResponse(resp, digestHex, { nonce, trust } = {}) {
     const signature = want(si[5], 0x04, 'signature').body;
     const toVerify = Buffer.concat([Buffer.from([0x31]), signed.raw.subarray(1)]); // [0] IMPLICIT → SET
 
-    const certs = certsNode ? children(buf, certsNode).filter((c) => c.tag === 0x30).map((c) => new X509Certificate(c.raw)) : [];
+    const certNodes = certsNode ? children(buf, certsNode).filter((c) => c.tag === 0x30) : [];
+    if (certNodes.length > 10) return { ok: false, reason: 'too many certificates in the token' };
+    const certs = certNodes.map((c) => new X509Certificate(c.raw));
     const signer = certs.find((c) => { try { return cryptoVerify(sigHash, toVerify, c.publicKey, signature); } catch { return false; } });
     if (!signer) return { ok: false, reason: 'the signature does not verify with a certificate of the token' };
     if (!(signer.keyUsage ?? []).includes(EKU_TIMESTAMPING)) return { ok: false, reason: 'the signing certificate is not for timestamping' };
     if (at < new Date(signer.validFrom) || at > new Date(signer.validTo)) return { ok: false, reason: 'the signing certificate was not valid at that time' };
 
-    const trusted = trust?.length ? chainsTo(signer, certs, trust) : null;
+    const trusted = trust?.length ? chainsTo(signer, certs, trust, at) : null;
     if (trusted === false) return { ok: false, reason: 'the signing certificate does not chain to the given authority' };
     return { ok: true, genTime: at.toISOString(), signer: signer.subject.replace(/\n/g, ', '), signerFingerprint: signer.fingerprint256, trusted };
   } catch (e) {

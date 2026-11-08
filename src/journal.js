@@ -53,3 +53,19 @@ export function verifyTimestamps(entries, timestamps = [], { trust } = {}) {
   }
   return { checked };
 }
+
+/**
+ * Entries first covered by a timestamp long after the time they give (stamps are daily): they may have
+ * been written, or rewritten, later than they say. [{ from, to, stampedAt }] by ranges of entries.
+ */
+export function lateCoverage(entries, checked, { days = 2 } = {}) {
+  const out = [];
+  let covered = 0;
+  for (const t of [...checked].sort((a, b) => a.genTime.localeCompare(b.genTime))) {
+    if (t.seq <= covered) continue;
+    const late = entries.filter((e) => Number(e.seq) > covered && Number(e.seq) <= t.seq && Date.parse(t.genTime) - Date.parse(e.at) > days * 86400e3).map((e) => Number(e.seq));
+    if (late.length) out.push({ from: late[0], to: late.at(-1), stampedAt: t.genTime });
+    covered = t.seq;
+  }
+  return out;
+}
