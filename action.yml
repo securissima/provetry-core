@@ -42,8 +42,11 @@ outputs:
     description: Path of the CycloneDX SBOM.
     value: ${{ steps.files.outputs.sbom }}
   vex:
-    description: Path of the reachability OpenVEX document, when one was made.
+    description: Path of the reachability OpenVEX document (for Provetry, as suggestions to review; do not pass it to scan --vex, use outputs.gate).
     value: ${{ steps.reach.outputs.vex }}
+  gate:
+    description: Path of the statements a CI gate may rely on (govulncheck's), for scan --vex.
+    value: ${{ steps.reach.outputs.gate }}
   sarif:
     description: Path of the SARIF report.
     value: ${{ steps.files.outputs.sarif }}

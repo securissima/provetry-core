@@ -1,5 +1,47 @@
-{ "packages": [
- { "name": "facade/ignition", "version": "2.5.1", "autoload": { "psr-4": { "Facade\\Ignition\\": "src" } }, "extra": { "laravel": { "providers": ["Facade\\Ignition\\IgnitionServiceProvider"] } } },
- { "name": "barryvdh/laravel-debugbar", "version": "3.9.0", "autoload": { "psr-4": { "Barryvdh\\Debugbar\\": "src/" } } },
- { "name": "league/unused", "version": "1.0.0", "autoload": { "psr-4": { "League\\Unused\\": "src/" } } }
-] }
+{
+ "packages": [
+  {
+   "name": "facade/ignition",
+   "version": "2.5.1",
+   "autoload": {
+    "psr-4": {
+     "Facade\\Ignition\\": "src"
+    }
+   },
+   "extra": {
+    "laravel": {
+     "providers": [
+      "Facade\\Ignition\\IgnitionServiceProvider"
+     ]
+    }
+   }
+  },
+  {
+   "name": "barryvdh/laravel-debugbar",
+   "version": "3.9.0",
+   "autoload": {
+    "psr-4": {
+     "Barryvdh\\Debugbar\\": "src/"
+    }
+   }
+  },
+  {
+   "name": "league/unused",
+   "version": "1.0.0",
+   "autoload": {
+    "psr-4": {
+     "League\\Unused\\": "src/"
+    }
+   }
+  },
+  {
+   "name": "phpseclib/phpseclib",
+   "version": "3.0.0",
+   "autoload": {
+    "psr-4": {
+     "phpseclib3\\": "phpseclib/"
+    }
+   }
+  }
+ ]
+}

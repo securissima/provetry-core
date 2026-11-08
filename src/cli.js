@@ -210,6 +210,7 @@ export async function main(argv) {
     const product = values.product ?? `pkg:generic/${encodeURIComponent(basename(dir))}`;
     const lists = [];
     const tools = [];
+    let goStatements = [];
     let incomplete = false;
     const summary = [];
 
@@ -220,7 +221,8 @@ export async function main(argv) {
         const r = await reach(dir, { govulncheck: values.govulncheck, product });
         for (const e of r.errors) process.stderr.write(`provetry: govulncheck failed in ${clean(e.module)}: ${clean(e.error)}\n`);
         if (r.errors.length) incomplete = true;
-        lists.push(r.doc.statements.map((x) => ({ vulnerability: x.vulnerability, purl: x.products[0].subcomponents[0]['@id'], status: x.status, justification: x.justification, status_notes: x.impact_statement ?? x.status_notes })));
+        goStatements = r.doc.statements.map((x) => ({ vulnerability: x.vulnerability, purl: x.products[0].subcomponents[0]['@id'], status: x.status, justification: x.justification, status_notes: x.impact_statement ?? x.status_notes }));
+        lists.push(goStatements);
         tools.push('govulncheck');
         const n = (s) => r.doc.statements.filter((x) => x.status === s).length;
         summary.push(`${r.modules.length} Go module${r.modules.length > 1 ? 's' : ''}: ${n('affected')} vulnerable function${n('affected') === 1 ? '' : 's'} called, ${n('not_affected')} not called`);
@@ -253,7 +255,7 @@ export async function main(argv) {
     await emit(JSON.stringify(doc, null, 2) + '\n', values.out);
     // The statements a CI gate may rely on: govulncheck's (function level). The import analysis only
     // suggests; its "not affected" waits for the manufacturer's decision.
-    if (values.gate) await writeFile(values.gate, JSON.stringify(mergeReach(tools.includes('govulncheck') ? [lists[0]] : [], { product, tools: tools.filter((t) => t === 'govulncheck') }), null, 2) + '\n');
+    if (values.gate) await writeFile(values.gate, JSON.stringify(mergeReach([goStatements], { product, tools: ['govulncheck'] }), null, 2) + '\n');
     process.stderr.write(`provetry: ${summary.join('; ')}\n`);
     if (incomplete) process.exitCode = 2;
     return;

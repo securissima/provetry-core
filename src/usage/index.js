@@ -21,15 +21,15 @@ const ORDER = { imported: 3, loaded: 2, unknown: 1, not_loaded: 0 };
 /** What the repository's files use, per ecosystem, read once. */
 async function repoUse(root) {
   const { files, incomplete } = await projectFiles(root);
-  const big = [];
+  const big = { npm: [], pypi: [], cargo: [], composer: [], gem: [], nuget: [] };
   const cache = new Map();
   const once = (k, fn) => cache.get(k) ?? cache.set(k, fn()).get(k);
   return {
     files, incomplete, big,
-    npm: () => once('npm', () => jsUse(root, files, big)),
-    pypi: () => once('pypi', async () => ({ ...(await pyUse(root, files, big)), installed: await installedPython(root) })),
+    npm: () => once('npm', () => jsUse(root, files, big.npm)),
+    pypi: () => once('pypi', async () => ({ ...(await pyUse(root, files, big.pypi)), installed: await installedPython(root) })),
     cargo: () => once('cargo', async () => {
-      const r = await rsUse(root, files, big);
+      const r = await rsUse(root, files, big.cargo);
       const renames = new Map();
       let outside = null;
       for (const f of files.filter((x) => /(?:^|\/)Cargo\.toml$/.test(x))) {
@@ -39,9 +39,9 @@ async function repoUse(root) {
       }
       return { ...r, renames, outside };
     }),
-    composer: () => once('composer', () => phpUse(root, files, big)),
-    gem: () => once('gem', () => rbUse(root, files, big)),
-    nuget: () => once('nuget', () => csUse(root, files, big)),
+    composer: () => once('composer', () => phpUse(root, files, big.composer)),
+    gem: () => once('gem', () => rbUse(root, files, big.gem)),
+    nuget: () => once('nuget', () => csUse(root, files, big.nuget)),
   };
 }
 
@@ -95,7 +95,9 @@ async function directUse(g, repo) {
     const all = [...names.keys()];
     for (const [purl] of g.nodes) {
       const prefixes = g.autoload?.get(purl)?.prefixes ?? [];
-      const hit = all.find((x) => prefixes.some((p) => x === p || x.startsWith(`${p}\\`) || x.startsWith(`${p}_`)));
+      // PHP namespaces are not case-sensitive.
+      const lp = prefixes.map((p) => p.toLowerCase());
+      const hit = all.find((x) => { const lx = x.toLowerCase(); return lp.some((p) => lx === p || lx.startsWith(`${p}\\`) || lx.startsWith(`${p}_`)); });
       set(purl, Boolean(hit), hit ? names.get(hit) : [], prefixes.length > 0);
     }
   } else if (g.ecosystem === 'gem') {
@@ -145,7 +147,8 @@ export async function analyseProject(lockPath, root, repo) {
   const fromUnsure = walk(g, unsure);
   const fromRoots = walk(g, [...g.roots]);
   const project = relative(root, lockPath) || lockPath;
-  const why = repo.incomplete ?? (repo.big.length ? `${repo.big.length} source file${repo.big.length > 1 ? 's' : ''} too large to read (${repo.big[0]})` : null) ?? blocked
+  const big = repo.big[g.ecosystem] ?? [];
+  const why = repo.incomplete ?? (big.length ? `${big.length} source file${big.length > 1 ? 's' : ''} too large to read (${big[0]})` : null) ?? blocked
     ?? (!g.complete ? 'the lock file does not give every dependency link' : null);
   const out = new Map();
   for (const purl of g.nodes.keys()) {

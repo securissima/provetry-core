@@ -37,7 +37,7 @@ export async function projectFiles(root) {
       if (e.isSymbolicLink()) {
         try {
           const target = await realpath(p);
-          if ((await stat(target)).isDirectory() && target !== realRoot && !target.startsWith(realRoot + sep)) incomplete ??= `${relative(root, p)} links to a folder outside the repository`;
+          if (target !== realRoot && !target.startsWith(realRoot + sep)) incomplete ??= `${relative(root, p)} links outside the repository`;
         } catch { /* dangling link */ }
         continue; // inside the repository: read where it really is
       }
@@ -58,21 +58,53 @@ export async function readText(root, f, big) {
   } catch { return null; }
 }
 
+/** Records where a name is used: a few files per name are enough as evidence. `line` may be a function. */
 function add(map, name, file, line, how) {
   const list = map.get(name) ?? map.set(name, []).get(name);
-  if (list.length < 5 && !list.some((x) => x.file === file)) list.push({ file, line, how });
+  if (list.length < 5 && !list.some((x) => x.file === file)) list.push({ file, line: typeof line === 'function' ? line() : line, how });
 }
-const lineAt = (src, index) => src.slice(0, index).split('\n').length;
+/** Line numbers of a text, by binary search over its line starts (computed once, when first needed). */
+function liner(src) {
+  let starts = null;
+  return (index) => () => {
+    if (!starts) { starts = [0]; for (let i = src.indexOf('\n'); i >= 0; i = src.indexOf('\n', i + 1)) starts.push(i + 1); }
+    let lo = 0; let hi = starts.length - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid] <= index) lo = mid; else hi = mid - 1; }
+    return lo + 1;
+  };
+}
 
 /** Files that name tools and packages in plain words: build, deployment and CI files, shell scripts. */
 export const OPS = /(?:^|\/)(?:Dockerfile[^/]*|Containerfile|[^/]*\.dockerfile|Makefile|GNUmakefile|Procfile[^/]*|Justfile|[^/]*\.(?:sh|bash|zsh|ya?ml|env|ini|cfg|conf)|\.env[^/]*)$/;
+const PY_MANIFEST = /(?:^|\/)(?:pyproject\.toml|setup\.cfg|tox\.ini)$/;
+/** A Python manifest without its dependency lists (which name every dependency, and are not a use). */
+export function withoutDependencyLists(text) {
+  const out = [];
+  let section = '';
+  let skipping = false;
+  for (const line of String(text).split(/\r?\n/)) {
+    const h = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+    if (h) { section = h[1]; skipping = false; out.push(line); continue; }
+    if (/dependencies|requires|extras|dependency-groups/i.test(section)) continue;
+    if (skipping) { if (/^\S/.test(line) && !/^\s*\]/.test(line)) skipping = false; else { if (/^\s*\]/.test(line)) skipping = false; continue; } }
+    if (/^\s*(?:dependencies|optional-dependencies|install_requires|setup_requires|tests_require|extras_require|requires|deps|build-backend-requires)\s*[=:]/i.test(line)) { skipping = !/\]\s*$/.test(line) && (/\[\s*$/.test(line) || /[=:]\s*$/.test(line) || /\[[^\]]*$/.test(line)); continue; }
+    out.push(line);
+  }
+  return out.join('\n');
+}
 const LOCKS = /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|poetry\.lock|uv\.lock|Pipfile(?:\.lock)?|composer\.lock|Gemfile(?:\.lock)?|packages\.lock\.json|go\.(?:mod|sum)|requirements[^/]*\.(?:txt|in)|constraints[^/]*\.txt|pyproject\.toml|setup\.cfg|tox\.ini|Cargo\.toml|composer\.json)$/;
 
 /** Every word of a text (names of tools, packages, modules): word → evidence. */
-function words(map, src, f, how) {
+function words(map, src, f, how, { dotted = false } = {}) {
+  const L = liner(src);
+  const seen = new Set();
   for (const m of src.matchAll(/[@A-Za-z0-9_][@A-Za-z0-9_./+-]*/g)) {
     const w = m[0].replace(/[./:+-]+$/, '');
-    if (w.length > 1 && w.length < 215) add(map, w, f, lineAt(src, m.index), how);
+    if (w.length < 2 || w.length > 214) continue;
+    // "django_redis.cache.RedisCache", "mysql+pymysql": every part and dotted prefix is a name too.
+    const all = [w];
+    if (dotted) for (const part of w.split(/[+/]/)) { const d = part.split('.'); for (let i = 1; i <= d.length; i++) all.push(d.slice(0, i).join('.')); }
+    for (const x of all) { if (!x || seen.has(x)) continue; seen.add(x); add(map, x, f, L(m.index), how); }
   }
 }
 
@@ -112,6 +144,7 @@ export async function jsUse(root, files, big) {
     if (!isCode && !isPkg && !isOps && !JS_TEXT.test(f)) continue;
     let src = await readText(root, f, isCode ? big : null);
     if (src == null) continue;
+    let L = liner(src);
     if (isCode) code++;
     if (isPkg) {
       // The dependency lists name every dependency: they are not a use. Scripts and settings are.
@@ -120,10 +153,11 @@ export async function jsUse(root, files, big) {
         for (const k of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'bundleDependencies', 'bundledDependencies', 'overrides', 'resolutions', 'peerDependenciesMeta', 'dependenciesMeta', 'name', 'workspaces', 'pnpm']) delete pj[k];
         for (const v of Object.values(pj.scripts ?? {})) words(tokens, String(v), f, 'run by a script');
         src = JSON.stringify(pj, null, 1);
+        L = liner(src);
       } catch { /* not JSON: read as text */ }
     }
-    if (isCode) for (const m of src.matchAll(JS_IMPORT)) { const p = npmPackageOf(m[1] ?? m[2]); if (p) add(imported, p, f, lineAt(src, m.index), 'imported'); }
-    for (const m of src.matchAll(QUOTED)) { const p = npmPackageOf(m[1]); if (p) add(named, p, f, lineAt(src, m.index), 'named'); }
+    if (isCode) for (const m of src.matchAll(JS_IMPORT)) { const p = npmPackageOf(m[1] ?? m[2]); if (p) add(imported, p, f, L(m.index), 'imported'); }
+    for (const m of src.matchAll(QUOTED)) { const p = npmPackageOf(m[1]); if (p) add(named, p, f, L(m.index), 'named'); }
     if (isOps) words(tokens, src, f, 'named');
   }
   return { imported, named, tokens, code };
@@ -155,29 +189,33 @@ export async function pyUse(root, files, big) {
   const tokens = new Map();
   let code = 0;
   for (const f of files) {
-    if (LOCKS.test(f)) continue;
     const isPy = /\.pyi?$/.test(f);
     const isNb = /\.ipynb$/.test(f);
-    const isOther = OPS.test(f) || /\.(?:toml|json|xml)$/.test(f);
+    const isManifest = PY_MANIFEST.test(f);
+    const isOther = isManifest || OPS.test(f) || /\.(?:toml|json|xml)$/.test(f);
     if (!isPy && !isNb && !isOther) continue;
+    if (LOCKS.test(f) && !isManifest) continue;
     let src = await readText(root, f, isPy || isNb ? big : null);
     if (src == null) continue;
+    let L = liner(src);
     if (isNb) {
       try { src = JSON.parse(src).cells?.map((c) => [].concat(c.source ?? []).join('')).join('\n') ?? ''; } catch { src = ''; }
+      L = liner(src);
     }
+    if (isManifest) src = withoutDependencyLists(src);
     if (isPy || isNb) {
       code++;
       for (const m of src.matchAll(PY_IMPORT)) {
         const mods = m[1] ? [m[1]] : m[2].split(',').map((x) => x.trim().split(/\s+/)[0]);
         for (const mod of mods) {
           const parts = mod.split('.');
-          add(imported, parts[0], f, lineAt(src, m.index), 'imported');
-          if (parts.length > 1) add(imported, `${parts[0]}.${parts[1]}`, f, lineAt(src, m.index), 'imported');
+          add(imported, parts[0], f, L(m.index), 'imported');
+          if (parts.length > 1) add(imported, `${parts[0]}.${parts[1]}`, f, L(m.index), 'imported');
         }
       }
       // Strings name modules too: importlib.import_module("x"), settings (INSTALLED_APPS, URLs "mysql+pymysql://").
-      for (const m of src.matchAll(/(['"])((?:(?!\1)[^\n\\]){1,300})\1/g)) words(tokens, m[2], f, 'named');
-    } else words(tokens, src, f, 'named');
+      for (const m of src.matchAll(/(['"])((?:(?!\1)[^\n\\]){1,300})\1/g)) words(tokens, m[2], f, 'named', { dotted: true });
+    } else words(tokens, src, f, 'named', { dotted: true });
   }
   return { imported, tokens, code };
 }
@@ -238,8 +276,9 @@ export async function rsUse(root, files, big) {
     if (!/\.rs$/.test(f)) continue;
     const src = await readText(root, f, big);
     if (src == null) continue;
+    let L = liner(src);
     code++;
-    for (const re of [RS_PATH, RS_USE]) for (const m of src.matchAll(re)) if (!['crate', 'self', 'super', 'std', 'core', 'alloc'].includes(m[1])) add(imported, m[1], f, lineAt(src, m.index), 'used');
+    for (const re of [RS_PATH, RS_USE]) for (const m of src.matchAll(re)) if (!['crate', 'self', 'super', 'std', 'core', 'alloc'].includes(m[1])) add(imported, m[1], f, L(m.index), 'used');
   }
   return { imported, code };
 }
@@ -273,8 +312,9 @@ export async function phpUse(root, files, big) {
     if (!isPhp && !/\.(?:ya?ml|xml|neon|json)$/.test(f)) continue;
     const src = await readText(root, f, isPhp ? big : null);
     if (src == null) continue;
+    let L = liner(src);
     if (isPhp) code++;
-    for (const m of src.matchAll(/([A-Z][A-Za-z0-9_]*(?:\\{1,2}[A-Za-z0-9_]+)+|[A-Z][A-Za-z0-9]*_[A-Za-z0-9_]+)/g)) add(names, m[1].replace(/\\\\/g, '\\'), f, lineAt(src, m.index), 'used');
+    for (const m of src.matchAll(/([A-Za-z_][A-Za-z0-9_]*(?:\\{1,2}[A-Za-z0-9_]+)+|[A-Z][A-Za-z0-9]*_[A-Za-z0-9_]+)/g)) add(names, m[1].replace(/\\\\/g, '\\'), f, L(m.index), 'used');
   }
   return { names, code };
 }
@@ -288,10 +328,11 @@ export async function rbUse(root, files, big) {
     if (!/\.(?:rb|rake|gemspec)$|(?:^|\/)(?:Rakefile|config\.ru)$/.test(f)) continue;
     const src = await readText(root, f, big);
     if (src == null) continue;
+    let L = liner(src);
     code++;
-    for (const m of src.matchAll(/\brequire\s*\(?\s*['"]([^'"]+)['"]/g)) add(imported, m[1], f, lineAt(src, m.index), 'required');
+    for (const m of src.matchAll(/\brequire\s*\(?\s*['"]([^'"]+)['"]/g)) add(imported, m[1], f, L(m.index), 'required');
     const b = /\bBundler\.require\b/.exec(src);
-    if (b && !bundlerRequire) bundlerRequire = { file: f, line: lineAt(src, b.index), how: 'required by Bundler.require' };
+    if (b && !bundlerRequire) bundlerRequire = { file: f, line: L(b.index)(), how: 'required by Bundler.require' };
   }
   return { imported, bundlerRequire, code };
 }
@@ -302,8 +343,9 @@ export async function csUse(root, files, big) {
     if (!/\.(?:cs|fs|vb)$/.test(f)) continue;
     const src = await readText(root, f, big);
     if (src == null) continue;
+    let L = liner(src);
     code++;
-    for (const m of src.matchAll(/^\s*(?:global\s+)?(?:using|open|Imports)\s+(?:static\s+)?([A-Z][\w.]*)/gm)) add(imported, m[1], f, lineAt(src, m.index), 'using');
+    for (const m of src.matchAll(/^\s*(?:global\s+)?(?:using|open|Imports)\s+(?:static\s+)?([A-Z][\w.]*)/gm)) add(imported, m[1], f, L(m.index), 'using');
   }
   return { imported, code };
 }

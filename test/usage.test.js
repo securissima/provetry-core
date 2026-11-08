@@ -85,4 +85,20 @@ test('the cases that must never be called "never loaded"', async () => {
   assert.match(at('pkg:composer/facade/ignition@2.5.1').evidence[0].how, /Laravel/);
   assert.equal(at('pkg:composer/barryvdh/laravel-debugbar@3.9.0').state, 'imported');
   assert.equal(at('pkg:composer/league/unused@1.0.0').state, 'not_loaded');
+  // A namespace in lower case (phpseclib3\\Net), a module named only in a dotted string (Django settings).
+  assert.equal(at('pkg:composer/phpseclib/phpseclib@3.0.0').state, 'imported');
+  assert.equal(at('pkg:pypi/django-redis@5.4.0').state, 'imported');
+});
+
+test('large files are read in linear time', async () => {
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(`${tmpdir()}/provetry-big-`);
+  writeFileSync(`${dir}/package-lock.json`, JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: { a: '1' } }, 'node_modules/a': { version: '1.0.0' } } }));
+  writeFileSync(`${dir}/index.js`, "import 'b';\n");
+  writeFileSync(`${dir}/openapi.yaml`, Array.from({ length: 60000 }, (_, i) => `  - name: item${i} "value-${i}" ref.path.x${i}`).join('\n'));
+  const t = Date.now();
+  const r = await usage(dir);
+  assert.ok(Date.now() - t < 15000, `took ${Date.now() - t} ms`);
+  assert.equal(r.components.get('pkg:npm/a@1.0.0').state, 'not_loaded');
 });
