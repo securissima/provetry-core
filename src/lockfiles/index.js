@@ -5,7 +5,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { basename, dirname, join, relative } from 'node:path';
 import { makePurl, normalizePypi } from '../purl.js';
 import { manifestDirectNames } from './manifests.js';
-import { parseGradleLock, parsePom } from './java.js';
+import { parseGradleLock, parsePomFile, POM_NOT_BUILD } from './java.js';
 
 /**
  * @typedef {{ type: string, name: string, version: string, purl: string, scope?: 'required'|'optional'|'dev',
@@ -32,7 +32,7 @@ export const PARSERS = {
   'packages.lock.json': parseNugetLock,
   'gradle.lockfile': (t) => parseGradleLock(t),
   'buildscript-gradle.lockfile': (t) => parseGradleLock(t, { buildscript: true }),
-  'pom.xml': parsePom,
+  'pom.xml': null, // read with its parents: see readLockFile
 };
 
 /** Lists the lock files under `root` (not following symbolic links), up to `maxDepth` folders deep. */
@@ -50,7 +50,11 @@ export async function findLockFiles(root, maxDepth = 6) {
       const p = join(dir, e.name);
       if (e.isDirectory()) {
         if (depth < maxDepth && !SKIP_DIRS.has(e.name)) await walk(p, depth + 1);
-      } else if (e.isFile() && PARSERS[e.name]) found.push(p);
+      } else if (e.isFile() && (PARSERS[e.name] !== undefined || (/\.lockfile$/.test(e.name) && basename(dir) === 'dependency-locks'))) {
+        // pom.xml of tests, templates or unpacked jars are not the product's build.
+        if (e.name === 'pom.xml' && POM_NOT_BUILD.test(relative(root, p))) continue;
+        found.push(p);
+      }
     }
   }
   await walk(root, 0);
@@ -62,11 +66,13 @@ export async function readLockFile(path, root = '.') {
   const s = await stat(path);
   if (s.size > MAX_FILE) throw new Error(`${path}: file too large (${s.size} bytes)`);
   const text = await readFile(path, 'utf8');
-  const parse = PARSERS[basename(path)];
+  const legacyGradle = /\.lockfile$/.test(path) && basename(dirname(path)) === 'dependency-locks';
+  const parse = basename(path) === 'pom.xml' ? () => parsePomFile(path)
+    : legacyGradle ? (t) => parseGradleLock(t, { configuration: basename(path, '.lockfile') }) : PARSERS[basename(path)];
   if (!parse) throw new Error(`${path}: unknown lock file`);
   let comps;
   try {
-    comps = parse(text);
+    comps = await parse(text);
   } catch (e) {
     throw new Error(`${relative(root, path) || path}: cannot be read (${e.message})`);
   }
@@ -77,7 +83,7 @@ export async function readLockFile(path, root = '.') {
     if (names) for (const c of comps) c.direct = names.has(c.type === 'pypi' ? normalizePypi(c.name) : c.name);
   }
   const out = comps.map((c) => ({ ...c, sources: [src] }));
-  if (comps.notice) Object.defineProperty(out, 'notice', { value: `${src} ${comps.notice}`, enumerable: false });
+  if (comps.notice) Object.defineProperty(out, 'notice', { value: { file: src, text: `${src} ${comps.notice.text}`, missing: comps.notice.missing }, enumerable: false });
   return out;
 }
 

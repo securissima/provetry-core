@@ -33,6 +33,7 @@ const NEXT_EXPLOITED =
 export function toText(r) {
   const { p, comps } = header(r);
   const out = [`Provetry ${TOOL.version} · ${p} · ${comps}`, ''];
+  for (const n of r.notes ?? []) out.push(`Note: ${n}`);
   for (const s of r.sources) if (!s.ok) out.push(s.optional ? `! ${s.name} unavailable (${s.note}): findings are not ranked by likelihood of exploitation.` : `! ${s.name} unavailable (${s.note}). Results are incomplete.`);
   if (r.sources.some((s) => !s.ok)) out.push('');
   if (!r.findings.length) {
@@ -61,6 +62,7 @@ export function toMarkdown(r) {
   const out = [`# Vulnerability report: ${md(p)}`, '', `Generated ${r.generatedAt} by Provetry ${TOOL.version}. ${comps}.`, ''];
   out.push('Sources: ' + r.sources.map((s) => (s.ok ? s.name : `${s.name} (unavailable: ${md(s.note)})`)).join(', ') + '.', '');
   if (!r.complete) out.push('> **Incomplete:** at least one source could not be checked. Run the scan again before relying on this report.', '');
+  for (const n of r.notes ?? []) out.push(`> **Note:** ${md(n)}`, '');
   if (!r.findings.length) {
     out.push('No known vulnerability in these components.', '');
   } else {

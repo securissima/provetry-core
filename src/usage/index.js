@@ -126,7 +126,7 @@ async function directUse(g, repo) {
       const [group, artifact] = n.name.split(':');
       const prefixes = [group, `${group}.${artifact.replace(/-/g, '.')}`];
       const hit = names.find((x) => prefixes.some((p) => x === p || x.startsWith(`${p}.`)));
-      set(purl, Boolean(hit), hit ? imported.get(hit) : [], false);
+      set(purl, Boolean(hit), hit ? imported.get(hit).map((e) => ({ ...e, how: `a package of the group ${group} is imported` })) : [], false);
     }
   }
   // Loaded whatever the code says.

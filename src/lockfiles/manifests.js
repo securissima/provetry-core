@@ -130,7 +130,8 @@ export async function gradleNames(dir) {
       if (hit) names.add(`${hit[1]}:${hit[2]}`);
     }
   }
-  return names;
+  // Nothing recognised (bundles, platforms, coordinates built from variables): unknown, not "none direct".
+  return names.size ? names : null;
 }
 
 export async function manifestDirectNames(dir, lockName) {

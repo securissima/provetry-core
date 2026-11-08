@@ -1,0 +1,1 @@
+<project><groupId>t</groupId><artifactId>it</artifactId><version>1</version><dependencies><dependency><groupId>should</groupId><artifactId>not-appear</artifactId><version>1</version></dependency></dependencies></project>

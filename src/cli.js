@@ -94,13 +94,13 @@ async function loadComponents(target) {
   if (st.isDirectory()) {
     const { components, files, errors, notices } = await collect(abs);
     for (const e of errors) process.stderr.write(`provetry: ${clean(e.error)}\n`);
-    for (const n of notices ?? []) process.stderr.write(`provetry: note: ${clean(n)}\n`);
+    for (const n of notices ?? []) process.stderr.write(`provetry: note: ${clean(n.text)}\n`);
     if (!files.length) fail(`no supported lock file found in ${target} (run "provetry --help" for the list, or pass an SBOM)`);
     const unknownDirect = [...new Set(components.filter((c) => typeof c.direct !== 'boolean').flatMap((c) => c.sources))];
     // Paths in reports are relative to where you run the command, so code-scanning tools can find the files.
     const rel = (f) => relative(process.cwd(), join(abs, f)) || f;
     for (const c of components) c.sources = c.sources.map(rel);
-    return { components, name: basename(abs), version: '', location: rel(files[0]), errors, unknownDirect: unknownDirect.map(rel) };
+    return { components, name: basename(abs), version: '', location: rel(files[0]), errors, unknownDirect: unknownDirect.map(rel), notices: notices ?? [] };
   }
   let json;
   try {
@@ -109,7 +109,7 @@ async function loadComponents(target) {
     fail(`${target} is not a JSON file`);
   }
   const s = readSbom(json);
-  return { components: s.components, name: s.name || basename(abs), version: s.version, location: relative(process.cwd(), abs) || basename(abs), errors: [], unknownDirect: [] };
+  return { components: s.components, name: s.name || basename(abs), version: s.version, location: relative(process.cwd(), abs) || basename(abs), errors: [], unknownDirect: [], notices: [] };
 }
 
 function parseDate(s, flag) {
@@ -133,11 +133,13 @@ export async function main(argv) {
     const dir = positionals[0] ?? '.';
     const st = await stat(resolve(dir)).catch(() => null);
     if (!st?.isDirectory()) fail(`${dir} is not a directory`);
-    const { components, name, errors, unknownDirect } = await loadComponents(dir);
+    const { components, name, errors, unknownDirect, notices } = await loadComponents(dir);
     if (errors.length) fail('no SBOM written: fix the lock files above first, an SBOM must not miss components');
     if (unknownDirect.length) process.stderr.write(`provetry: no manifest says which dependencies are direct for ${unknownDirect.join(', ')}: their top-level dependencies cannot be told apart from the others in the SBOM\n`);
     const product = { name: values.name ?? name, version: values.version, supplier: values.supplier };
-    const doc = values.format === 'spdx' ? toSpdx(product, components) : toCycloneDx(product, components);
+    // What the files could not give (Maven's transitive tree, unresolved versions) is written in the SBOM too.
+    const incomplete = notices.map((n) => n.text);
+    const doc = values.format === 'spdx' ? toSpdx(product, components, { incomplete }) : toCycloneDx(product, components, { incomplete });
     await emit(JSON.stringify(doc, null, 2) + '\n', values.out);
     if (values.out) process.stderr.write(`provetry: ${components.length} components written to ${values.out}\n`);
     return;
@@ -167,7 +169,7 @@ export async function main(argv) {
     if (values['fail-on'] && !['exploited', 'critical', 'high', 'medium', 'low', 'any', 'none'].includes(values['fail-on'])) fail('--fail-on must be exploited, critical, high, medium, low or any');
     if (values.offline && values['no-cache']) fail('--offline needs the cache');
     const target = positionals[0] ?? '.';
-    const { components, name, version, location, errors } = await loadComponents(target);
+    const { components, name, version, location, errors, notices } = await loadComponents(target);
     const vex = [];
     for (const f of values.vex) {
       try {
@@ -185,6 +187,12 @@ export async function main(argv) {
       euvd: !values['no-euvd'],
       epss: !values['no-epss'],
     });
+    if (notices.length) result.notes = notices.map((n) => n.text);
+    // Direct dependencies without a version: below the minimum the CRA asks of an SBOM, so incomplete.
+    if (notices.some((n) => n.missing)) {
+      result.complete = false;
+      result.sources.push({ name: 'Maven pom.xml', ok: false, note: `${notices.reduce((s, n) => s + n.missing, 0)} direct dependencies without a resolvable version` });
+    }
     if (errors.length) {
       result.complete = false;
       result.sources.push({ name: 'Lock files', ok: false, note: `${errors.length} could not be read` });
@@ -240,7 +248,9 @@ export async function main(argv) {
       for (const e of u.errors) process.stderr.write(`provetry: ${clean(e.file)}: ${clean(e.error)}\n`);
       if (u.errors.length) incomplete = true;
       if (u.projects.length) {
-        const comps = (await collect(dir)).components.filter((c) => c.type !== 'golang');
+        const collected = await collect(dir);
+        for (const n of collected.notices ?? []) process.stderr.write(`provetry: note: ${clean(n.text)}\n`);
+        const comps = collected.components.filter((c) => c.type !== 'golang');
         const ctx = await defaultContext({ cache: !values['no-cache'] });
         ctx.offline = values.offline;
         const r = await scan(ctx, comps, { includeDev: true, epss: false });

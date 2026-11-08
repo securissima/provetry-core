@@ -1,96 +1,142 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Java (and Kotlin, Scala on the JVM): Gradle's dependency lock files, which list every resolved component,
 // and Maven's pom.xml, which lists the direct dependencies only (Maven has no lock file: the full tree needs
-// Maven itself, or an SBOM from the CycloneDX Maven plugin, which `provetry scan` reads).
+// Maven itself, or an SBOM from the CycloneDX Maven plugin, which `provetry scan` reads). What pom.xml
+// cannot give is said in a notice, carried into the SBOM (marked incomplete) and the scan report.
+import { readFile } from 'node:fs/promises';
+import { dirname, join, resolve, basename } from 'node:path';
 import { makePurl } from '../purl.js';
 
 const comp = (name, version, extra = {}) => ({ type: 'maven', name, version, purl: makePurl('maven', name, version), scope: 'required', ...extra });
-const TEST_ONLY = /^(?:test|androidTest|testFixtures|integrationTest|functionalTest)[A-Z]|^test$|TestCompileClasspath$|TestRuntimeClasspath$|UnitTest|AndroidTest/;
+
+const TEST = /^test$|^(?:test|androidTest|testFixtures|integrationTest|functionalTest)[A-Z]|[a-z]Test(?:Compile|Runtime)Classpath$|UnitTest|AndroidTest/;
+const RUNTIME = /(?:^|[a-z])[Rr]untimeClasspath$/;
 
 /**
- * gradle.lockfile (Gradle 6.8+): "group:artifact:version=configuration,configuration". A component only in
- * test configurations is a development dependency; one in buildscript-gradle.lockfile builds the product
- * and does not ship in it.
+ * gradle.lockfile (Gradle 6.8+): "group:artifact:version=configuration,configuration". Shipped means in a
+ * runtime classpath that is not a test one (and, when release variants exist, not a debug-only one);
+ * anything else (compile-only, annotation processors, linters, test, the build script) does not ship.
+ * Gradle before 6.8 kept one file per configuration (gradle/dependency-locks/<configuration>.lockfile,
+ * "group:artifact:version" lines): `configuration` names it then.
  */
-export function parseGradleLock(text, { buildscript = false } = {}) {
-  const out = [];
+export function parseGradleLock(text, { buildscript = false, configuration = null } = {}) {
+  const rows = [];
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith('#') || line.startsWith('empty=')) continue;
-    const m = /^([^:=\s]+):([^:=\s]+):([^:=\s]+)=(.*)$/.exec(line);
+    const m = /^([^:=\s]+):([^:=\s]+):([^:=\s]+)(?:=(.*))?$/.exec(line);
     if (!m) throw new Error(`unexpected line: ${line.slice(0, 80)}`);
-    const confs = m[4].split(',').map((c) => c.trim()).filter(Boolean);
-    const dev = buildscript || (confs.length > 0 && confs.every((c) => TEST_ONLY.test(c)));
-    out.push(comp(`${m[1]}:${m[2]}`, m[3], { scope: dev ? 'dev' : 'required' }));
+    const confs = (m[4] !== undefined ? m[4].split(',') : configuration ? [configuration] : []).map((c) => c.trim()).filter(Boolean);
+    rows.push({ name: `${m[1]}:${m[2]}`, version: m[3], confs });
   }
-  return out;
+  const hasRelease = rows.some((r) => r.confs.some((c) => /^release/i.test(c) && RUNTIME.test(c)));
+  return rows.map((r) => {
+    const ships = !buildscript && r.confs.some((c) => RUNTIME.test(c) && !TEST.test(c) && !(hasRelease && /^debug/i.test(c)));
+    // No configuration known (a legacy file of unknown purpose): counted as shipped rather than left out.
+    return comp(r.name, r.version, { scope: ships || (!buildscript && !r.confs.length) ? 'required' : 'dev' });
+  });
 }
 
 // ---------- pom.xml ----------
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+const clean = (s) => s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/&(amp|lt|gt|quot|apos);/g, (_, e) => ENTITIES[e]).trim();
 const tag = (xml, name) => {
-  const m = new RegExp(`<${name}>\\s*([^<]*?)\\s*</${name}>`).exec(xml);
-  return m ? m[1] : null;
+  const m = new RegExp(`<(?:[\\w-]+:)?${name}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[\\w-]+:)?${name}>`).exec(xml);
+  return m ? clean(m[1]) : null;
 };
-/** The top-level children of an element, by name (no nesting of the same name inside). */
-function blocks(xml, name) {
-  return [...xml.matchAll(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)</${name}>`, 'g'))].map((m) => m[1]);
-}
-const stripComments = (xml) => xml.replace(/<!--[\s\S]*?-->/g, '');
-/** Removes nested elements that would be mistaken for the project's own (plugins, profiles, management). */
-function withoutSections(xml, names) {
-  let out = xml;
-  for (const n of names) out = out.replace(new RegExp(`<${n}(?:\\s[^>]*)?>[\\s\\S]*?</${n}>`, 'g'), '');
+/** The children of an element, by name. */
+const blocks = (xml, name) => [...xml.matchAll(new RegExp(`<(?:[\\w-]+:)?${name}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[\\w-]+:)?${name}>`, 'g'))].map((m) => m[1]);
+const without = (xml, names) => names.reduce((x, n) => x.replace(new RegExp(`<(?:[\\w-]+:)?${n}(?:\\s[^>]*)?>[\\s\\S]*?</(?:[\\w-]+:)?${n}>`, 'g'), ''), xml);
+const props = (xml) => {
+  const out = new Map();
+  for (const p of blocks(xml, 'properties')) for (const m of p.matchAll(/<([A-Za-z0-9_.-]+)(?:\s[^>]*)?>([\s\S]*?)<\/\1>/g)) out.set(m[1], clean(m[2]));
   return out;
+};
+
+/** One POM read on its own: identity, properties, management, dependencies (active-by-default profiles included). */
+export function parsePomText(text) {
+  const xml = text.replace(/<!--[\s\S]*?-->/g, '');
+  const parent = blocks(xml, 'parent')[0] ?? '';
+  const profiles = blocks(blocks(xml, 'profiles')[0] ?? '', 'profile');
+  const active = profiles.filter((p) => tag(p, 'activeByDefault') === 'true');
+  const inactiveDeps = profiles.filter((p) => !active.includes(p)).reduce((n, p) => n + blocks(blocks(without(p, ['dependencyManagement', 'build']), 'dependencies')[0] ?? '', 'dependency').length, 0);
+  const top = without(xml, ['parent', 'build', 'profiles', 'reporting', 'pluginRepositories', 'repositories', 'distributionManagement']);
+  const head = without(top, ['dependencies', 'dependencyManagement', 'properties', 'modules', 'licenses', 'developers', 'contributors', 'scm', 'organization', 'issueManagement', 'ciManagement', 'mailingLists']);
+  const properties = props(top);
+  for (const p of active) for (const [k, v] of props(p)) properties.set(k, v);
+  const mgmt = (x) => blocks(blocks(x, 'dependencyManagement')[0] ?? '', 'dependency');
+  const deps = (x) => blocks(blocks(without(x, ['dependencyManagement']), 'dependencies')[0] ?? '', 'dependency');
+  const read = (d) => {
+    const x = without(d, ['exclusions']);
+    return { g: tag(x, 'groupId'), a: tag(x, 'artifactId'), v: tag(x, 'version'), scope: tag(x, 'scope') ?? 'compile', optional: tag(x, 'optional') === 'true', type: tag(x, 'type') };
+  };
+  return {
+    groupId: tag(head, 'groupId') ?? tag(parent, 'groupId'), artifactId: tag(head, 'artifactId'), version: tag(head, 'version') ?? tag(parent, 'version'),
+    parent: parent ? { g: tag(parent, 'groupId'), a: tag(parent, 'artifactId'), v: tag(parent, 'version'), path: tag(parent, 'relativePath') } : null,
+    properties, managed: [...mgmt(top), ...active.flatMap(mgmt)].map(read), dependencies: [...deps(top), ...active.flatMap(deps)].map(read), inactiveDeps,
+  };
 }
 
 /**
- * pom.xml: the direct dependencies, versions resolved from the properties and the dependency management of
- * this file. Returns { components, unresolved } (unresolved: "group:artifact" whose version comes from a
- * parent or an imported BOM, which only Maven can resolve).
+ * A pom.xml, with its parents inside the repository (<relativePath>, by default ../pom.xml, when the
+ * coordinates match): their properties and dependency management apply. Returns { components, unresolved,
+ * notes }; unresolved are direct dependencies whose version only Maven can tell (a parent or a BOM outside
+ * the repository).
  */
-export function readPom(text) {
-  const xml = stripComments(text);
-  const parent = blocks(xml, 'parent')[0] ?? '';
-  const top = withoutSections(xml, ['parent', 'build', 'profiles', 'reporting', 'dependencyManagement', 'pluginRepositories', 'repositories', 'distributionManagement']);
-  const props = new Map();
-  for (const p of blocks(xml, 'properties')) for (const m of p.matchAll(/<([A-Za-z0-9_.-]+)>\s*([^<]*?)\s*<\/\1>/g)) props.set(m[1], m[2]);
-  const groupId = tag(top.replace(/<dependencies>[\s\S]*<\/dependencies>/, ''), 'groupId') ?? tag(parent, 'groupId');
-  const version = tag(top.replace(/<dependencies>[\s\S]*<\/dependencies>/, ''), 'version') ?? tag(parent, 'version');
-  for (const [k, v] of [['project.groupId', groupId], ['pom.groupId', groupId], ['project.version', version], ['pom.version', version], ['project.parent.version', tag(parent, 'version')], ['parent.version', tag(parent, 'version')]]) if (v) props.set(k, v);
-  const expand = (s, depth = 0) => (s && depth < 10 && /\$\{/.test(s) ? expand(s.replace(/\$\{([^}]+)\}/g, (all, k) => props.get(k) ?? all), depth + 1) : s);
-  const managed = new Map();
-  for (const dm of blocks(xml, 'dependencyManagement')) {
-    for (const d of blocks(dm, 'dependency')) {
-      const g = expand(tag(d, 'groupId')); const a = expand(tag(d, 'artifactId')); const v = expand(tag(d, 'version'));
-      if (g && a && v && tag(d, 'scope') !== 'import') managed.set(`${g}:${a}`, v);
+export async function readPomFile(path) {
+  const chain = [];
+  let p = resolve(path);
+  for (let i = 0; i < 10; i++) {
+    let text;
+    try { text = await readFile(p, 'utf8'); } catch { break; }
+    const pom = parsePomText(text);
+    if (chain.length) {
+      const child = chain[chain.length - 1].parent;
+      if (!child || pom.artifactId !== child.a || (pom.groupId && child.g && pom.groupId !== child.g)) break;
     }
+    chain.push(pom);
+    if (!pom.parent || pom.parent.path === '') break;
+    const rel = pom.parent.path ?? '../pom.xml';
+    p = resolve(dirname(p), rel.endsWith('.xml') ? rel : join(rel, 'pom.xml'));
   }
+  const self = chain[0];
+  const properties = new Map();
+  for (const pom of [...chain].reverse()) for (const [k, v] of pom.properties) properties.set(k, v);
+  for (const [k, v] of [['project.groupId', self.groupId], ['pom.groupId', self.groupId], ['project.version', self.version], ['pom.version', self.version], ['project.artifactId', self.artifactId], ['project.parent.version', self.parent?.v], ['parent.version', self.parent?.v]]) if (v) properties.set(k, v);
+  const expand = (s) => { let x = s; for (let i = 0; i < 10 && x && /\$\{/.test(x); i++) x = x.replace(/\$\{([^}]+)\}/g, (all, k) => properties.get(k) ?? all); return x; };
+  const managed = new Map();
+  for (const pom of [...chain].reverse()) for (const d of pom.managed) if (d.scope !== 'import' && d.g && d.a && d.v) managed.set(`${expand(d.g)}:${expand(d.a)}`, expand(d.v));
   const components = [];
   const unresolved = [];
-  const deps = blocks(top, 'dependencies')[0] ?? '';
-  for (const d of blocks(deps, 'dependency')) {
-    const g = expand(tag(d, 'groupId'));
-    const a = expand(tag(d, 'artifactId'));
-    if (!g || !a) continue;
-    const scope = tag(d, 'scope') ?? 'compile';
-    if (scope === 'system' || scope === 'import') continue;
-    let v = expand(tag(d, 'version')) ?? managed.get(`${g}:${a}`) ?? null;
+  const notes = [];
+  // Modules of the same build (any POM of the parent chain shares the group): the product itself.
+  const ownGroups = new Set(chain.map((c) => c.groupId).filter(Boolean));
+  for (const d of self.dependencies) {
+    const g = expand(d.g);
+    const a = expand(d.a);
+    if (!g || !a || d.scope === 'import') continue;
+    let v = expand(d.v) ?? managed.get(`${g}:${a}`) ?? null;
     if (v) v = v.replace(/^\[([^,\]]+)\]$/, '$1'); // "[1.2.3]" is an exact version
+    if (d.scope === 'system') notes.push(`${g}:${a} is a local file (scope system)`);
     if (!v || /\$\{|[[\](),]/.test(v)) { unresolved.push(`${g}:${a}`); continue; }
-    // A module of the same project, at the project's own version: the product itself, not a dependency.
-    if (g === groupId && v === version) continue;
-    components.push(comp(`${g}:${a}`, v, { direct: true, scope: scope === 'test' || scope === 'provided' ? 'dev' : tag(d, 'optional') === 'true' ? 'optional' : 'required' }));
+    if (ownGroups.has(g) && (v === self.version || d.v === '${project.version}')) continue;
+    components.push(comp(`${g}:${a}`, v, { direct: true, scope: d.scope === 'test' || d.scope === 'provided' ? 'dev' : d.optional ? 'optional' : 'required' }));
   }
-  return { components, unresolved };
+  if (self.inactiveDeps) notes.push(`${self.inactiveDeps} dependenc${self.inactiveDeps > 1 ? 'ies' : 'y'} in profiles not active by default left out`);
+  return { components, unresolved, notes };
 }
 
-export function parsePom(text) {
-  const { components, unresolved } = readPom(text);
+/** Folders whose pom.xml files are not the product's build: tests of Maven plugins, templates, unpacked jars. */
+export const POM_NOT_BUILD = /(?:^|\/)(?:src\/(?:test|it|main\/resources)|META-INF|[^/]*-resources|archetype-resources|src\/site)\//;
+
+export async function parsePomFile(path) {
+  const { components, unresolved, notes } = await readPomFile(path);
   const out = [...components];
-  // Said, not hidden: the caller reports these (no version here means a parent POM or a BOM decides it).
-  Object.defineProperty(out, 'notice', {
-    value: `lists the direct dependencies only${unresolved.length ? `, and ${unresolved.length} without a version here (set by a parent POM or a BOM: ${unresolved.slice(0, 3).join(', ')}${unresolved.length > 3 ? '…' : ''})` : ''}; for the full tree, pass an SBOM from the CycloneDX Maven plugin`,
-    enumerable: false,
-  });
+  const parts = ['lists the direct dependencies only (for the full tree, pass an SBOM from the CycloneDX Maven plugin)'];
+  if (unresolved.length) parts.push(`${unresolved.length} direct dependenc${unresolved.length > 1 ? 'ies have' : 'y has'} no version Provetry can resolve here (a parent POM or a BOM outside the repository): ${unresolved.slice(0, 3).join(', ')}${unresolved.length > 3 ? '…' : ''}`);
+  parts.push(...notes);
+  Object.defineProperty(out, 'notice', { value: { text: parts.join('; '), missing: unresolved.length }, enumerable: false });
   return out;
 }
+
+export const _test = { basename };

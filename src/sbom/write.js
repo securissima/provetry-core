@@ -36,6 +36,7 @@ export function toCycloneDx(product, components, opts = {}) {
       timestamp: now,
       lifecycles: [{ phase: 'build' }],
       tools: { components: [{ type: 'application', author: TOOL.vendor, name: TOOL.name, version: TOOL.version }] },
+      ...(opts.incomplete?.length ? { properties: opts.incomplete.map((value) => ({ name: 'provetry:incomplete', value })) } : {}),
       component: {
         type: 'application',
         'bom-ref': rootRef,
@@ -45,6 +46,8 @@ export function toCycloneDx(product, components, opts = {}) {
       },
     },
     components: comps,
+    // Said in the document itself: a reader must not take a partial inventory for a complete one.
+    ...(opts.incomplete?.length ? { compositions: [{ aggregate: 'incomplete', assemblies: [rootRef] }] } : {}),
     // Top-level dependencies are what the CRA asks for at the very least (Annex I, Part II, point 1). When
     // no lock file said which ones they are, the graph is left out rather than guessed.
     ...(direct.length ? { dependencies: [{ ref: rootRef, dependsOn: direct }] } : {}),
@@ -85,7 +88,7 @@ export function toSpdx(product, components, opts = {}) {
     SPDXID: 'SPDXRef-DOCUMENT',
     name,
     documentNamespace: `https://provetry.com/spdx/${encodeURIComponent(name)}-${opts.serial ?? randomUUID()}`,
-    creationInfo: { created: now, creators: [`Tool: ${TOOL.name}-${TOOL.version}`, ...(product.supplier ? [`Organization: ${product.supplier}`] : [])] },
+    creationInfo: { created: now, creators: [`Tool: ${TOOL.name}-${TOOL.version}`, ...(product.supplier ? [`Organization: ${product.supplier}`] : [])], ...(opts.incomplete?.length ? { comment: `Incomplete: ${opts.incomplete.join(' | ')}` } : {}) },
     packages: [
       {
         SPDXID: rootId,
