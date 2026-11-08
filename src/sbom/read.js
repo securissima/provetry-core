@@ -65,24 +65,28 @@ const isSpdx3 = (json) => [json?.['@context']].flat().some((c) => typeof c === '
 const SPDX3_TO_CDX = { sha1: 'SHA-1', sha256: 'SHA-256', sha384: 'SHA-384', sha512: 'SHA-512', md5: 'MD5', sha3_256: 'SHA3-256', sha3_384: 'SHA3-384', sha3_512: 'SHA3-512', blake2b256: 'BLAKE2b-256', blake2b384: 'BLAKE2b-384', blake2b512: 'BLAKE2b-512', blake3: 'BLAKE3' };
 
 function readSpdx3(doc) {
-  const graph = doc['@graph'];
-  const kind = (e) => String(e?.type ?? e?.['@type'] ?? '').replace(/^.*[/#]/, '');
+  const graph = doc['@graph'].filter((e) => e && typeof e === 'object');
+  const short = (v) => String(v ?? '').replace(/^.*[/#]/, '');
+  const kind = (e) => short(e?.type ?? e?.['@type']);
+  const list = (v) => (Array.isArray(v) ? v : v != null ? [v] : []);
+  const rels = graph.filter((e) => /Relationship$/.test(kind(e)));
   const dev = new Set();
-  for (const r of graph) {
-    if (kind(r) === 'LifecycleScopedRelationship' && r.scope === 'development' && r.relationshipType === 'dependsOn') for (const t of [r.to].flat()) dev.add(t);
+  for (const rel of rels) {
+    if (short(rel.relationshipType) === 'dependsOn' && ['development', 'build', 'test'].includes(short(rel.scope))) for (const t of list(rel.to)) dev.add(t);
   }
   const out = [];
   for (const e of graph) {
     if (!/^(software_)?Package$/.test(kind(e))) continue;
-    const purl = e.software_packageUrl ?? (e.externalIdentifier ?? []).find((x) => x?.externalIdentifierType === 'packageUrl')?.identifier;
-    if (!purl) continue;
-    const hashes = (e.verifiedUsing ?? []).filter((h) => SPDX3_TO_CDX[h?.algorithm] && h.hashValue).map((h) => ({ alg: SPDX3_TO_CDX[h.algorithm], content: h.hashValue }));
+    const purl = e.software_packageUrl ?? list(e.externalIdentifier).find((x) => short(x?.externalIdentifierType) === 'packageUrl')?.identifier;
+    if (typeof purl !== 'string') continue;
+    const hashes = list(e.verifiedUsing).filter((h) => SPDX3_TO_CDX[short(h?.algorithm)] && typeof h.hashValue === 'string').map((h) => ({ alg: SPDX3_TO_CDX[short(h.algorithm)], content: h.hashValue }));
     const comp = fromPurl(purl, { hashes, scope: dev.has(e.spdxId) ? 'dev' : 'required' });
     if (comp) out.push(comp);
   }
-  const info = graph.find((e) => kind(e) === 'CreationInfo');
   const docEl = graph.find((e) => kind(e) === 'SpdxDocument');
-  const c = /^Incomplete(?: \((\d+) unresolved direct dependencies\))?: (.*)$/s.exec(info?.comment ?? '');
+  const info = graph.find((e) => kind(e) === 'CreationInfo') ?? (typeof docEl?.creationInfo === 'object' ? docEl.creationInfo : null);
+  const c = /^Incomplete(?: \((\d+) unresolved direct dependencies\))?: (.*)$/s.exec(typeof info?.comment === 'string' ? info.comment : '');
   const notices = c ? [{ text: c[2], missing: Number(c[1] ?? 0) }] : [];
-  return { format: 'SPDX', specVersion: `SPDX-${info?.specVersion ?? '3'}`, name: docEl?.name ?? '', version: '', components: out, notices };
+  if (!notices.length && rels.some((rel) => short(rel.completeness) === 'incomplete')) notices.push({ text: 'the SBOM says its inventory is incomplete', missing: 0 });
+  return { format: 'SPDX', specVersion: `SPDX-${typeof info?.specVersion === 'string' ? info.specVersion : '3'}`, name: typeof docEl?.name === 'string' ? docEl.name : '', version: '', components: out, notices };
 }

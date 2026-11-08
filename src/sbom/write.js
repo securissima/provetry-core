@@ -134,7 +134,7 @@ export function toSpdx3(product, components, opts = {}) {
   const ci = '_:creationinfo';
   const toolId = `${ns}#tool`;
   const orgId = `${ns}#supplier`;
-  const creatorId = product.supplier ? orgId : `${ns}#provetry`;
+  const creatorId = product.supplier ? orgId : `${ns}#creator`;
   const rootId = `${ns}#product`;
   const sbomId = `${ns}#sbom`;
   const ids = new Set();
@@ -155,16 +155,22 @@ export function toSpdx3(product, components, opts = {}) {
       ...(c.scope === 'dev' ? { comment: 'Development dependency (not shipped).' } : {}),
     };
   });
-  // Only what is known, as in SPDX 2.3: the product depends on its top-level dependencies (development
-  // ones scoped as such); transitive components carry no relationship rather than a guessed one.
+  // Only what is known, as in SPDX 2.3: the product depends on its top-level dependencies; transitive
+  // components carry no relationship rather than a guessed one. Development dependencies, direct or not,
+  // are the targets of a dependsOn scoped "development", so a reader can tell them apart. Completeness is
+  // only asserted when it is known not to be: "incomplete" when something could not be resolved, and no
+  // assertion otherwise (the list holds the top-level dependencies, not the whole tree).
   const rels = [];
   const direct = pkgs.filter((_, i) => components[i].direct && components[i].scope !== 'dev').map((p) => p.spdxId);
   const dev = pkgs.filter((_, i) => components[i].scope === 'dev').map((p) => p.spdxId);
-  if (direct.length) rels.push({ type: 'Relationship', spdxId: `${ns}#depends-on`, creationInfo: ci, from: rootId, relationshipType: 'dependsOn', to: direct, completeness: opts.incomplete?.length ? 'incomplete' : 'complete' });
+  if (direct.length) rels.push({ type: 'Relationship', spdxId: `${ns}#depends-on`, creationInfo: ci, from: rootId, relationshipType: 'dependsOn', to: direct, ...(opts.incomplete?.length ? { completeness: 'incomplete' } : {}) });
   if (dev.length) rels.push({ type: 'LifecycleScopedRelationship', spdxId: `${ns}#dev-depends-on`, creationInfo: ci, from: rootId, relationshipType: 'dependsOn', scope: 'development', to: dev });
   const agents = [
     { type: 'Tool', spdxId: toolId, creationInfo: ci, name: `${TOOL.name}-${TOOL.version}` },
-    { type: 'Organization', spdxId: creatorId, creationInfo: ci, name: product.supplier || TOOL.vendor },
+    // The author: the supplier when known; otherwise the software that wrote it, not a company.
+    product.supplier
+      ? { type: 'Organization', spdxId: creatorId, creationInfo: ci, name: product.supplier }
+      : { type: 'SoftwareAgent', spdxId: creatorId, creationInfo: ci, name: TOOL.name },
   ];
   const root = {
     type: 'software_Package',
@@ -190,7 +196,7 @@ export function toSpdx3(product, components, opts = {}) {
       },
       ...agents,
       { type: 'SpdxDocument', spdxId: ns, creationInfo: ci, name, profileConformance: ['core', 'software'], rootElement: [sbomId], element: [sbomId, ...agents.map((a) => a.spdxId), ...all] },
-      { type: 'software_Sbom', spdxId: sbomId, creationInfo: ci, software_sbomType: ['build'], rootElement: [rootId], element: all },
+      { type: 'software_Sbom', spdxId: sbomId, creationInfo: ci, software_sbomType: ['source'], rootElement: [rootId], element: all },
       root,
       ...pkgs,
       ...rels,
