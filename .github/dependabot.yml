@@ -1,0 +1,14 @@
+# The lock files under test/fixtures describe vulnerable projects on purpose (the tests check that
+# Provetry finds and analyses them): they are never updated. The tool itself has no dependency.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: monthly
+    exclude-paths:
+      - "test/**"
