@@ -4,7 +4,9 @@ import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { canonical, entryHash, verifyChain, verifyTimestamps, GENESIS } from '../src/journal.js';
+import { canonical, entryHash, verifyChain, verifyTimestamps, readCertificates, GENESIS } from '../src/journal.js';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 function chain(n) {
   const out = [];
@@ -53,12 +55,22 @@ test('CLI: verify-journal says OK or where it breaks', () => {
   assert.match(out, /BROKEN at entry 2: content changed/);
 });
 
-test('timestamps: they must name an entry of the chain and carry its hash', () => {
-  const c = chain(2);
-  const der = (hex) => Buffer.concat([Buffer.from([0x30, 0x27, 0x30, 0x03, 0x02, 0x01, 0x00, 0x04, 0x20]), Buffer.from(hex, 'hex')]).toString('base64');
-  assert.equal(verifyTimestamps(c, [{ seq: 2, hash: c[1].hash, response: der(c[1].hash) }]), null);
-  assert.match(verifyTimestamps(c, [{ seq: 2, hash: c[0].hash, response: der(c[0].hash) }]).reason, /not in this journal/);
-  assert.match(verifyTimestamps(c, [{ seq: 1, hash: c[0].hash, response: der(c[1].hash) }]).reason, /digest is not in the token/);
-  const refused = Buffer.from([0x30, 0x05, 0x30, 0x03, 0x02, 0x01, 0x02]).toString('base64');
-  assert.match(verifyTimestamps(c, [{ seq: 1, hash: c[0].hash, response: refused }]).reason, /refused/);
+test('timestamps: a real RFC 3161 token, checked for its hash, signature and (with the CA) its signer', () => {
+  const dir = new URL('./fixtures/tsa/', import.meta.url);
+  const token = readFileSync(new URL('hello.tsr', dir)).toString('base64');
+  const h = createHash('sha256').update('hello').digest('hex');
+  const entries = [{ seq: 1, hash: h }];
+  const ok = verifyTimestamps(entries, [{ seq: 1, hash: h, response: token }]);
+  assert.equal(ok.checked[0].signer, 'CN=Test TSA');
+  assert.equal(ok.checked[0].trusted, null);
+  assert.equal(verifyTimestamps(entries, [{ seq: 1, hash: h, response: token }], { trust: readCertificates(readFileSync(new URL('ca.pem', dir), 'utf8')) }).checked[0].trusted, true);
+  assert.match(verifyTimestamps(entries, [{ seq: 1, hash: h, response: token }], { trust: readCertificates(readFileSync(new URL('other-ca.pem', dir), 'utf8')) }).broken.reason, /does not chain/);
+  assert.match(verifyTimestamps(entries, [{ seq: 2, hash: h, response: token }]).broken.reason, /not in this journal/);
+  const other = 'ab'.repeat(32);
+  assert.match(verifyTimestamps([{ seq: 1, hash: other }], [{ seq: 1, hash: other, response: token }]).broken.reason, /another hash/);
+  // A forged answer that only carries the hash, without a signed token, is refused.
+  const forged = Buffer.concat([Buffer.from([0x30, 0x27, 0x30, 0x03, 0x02, 0x01, 0x00, 0x04, 0x20]), Buffer.from(h, 'hex')]).toString('base64');
+  assert.match(verifyTimestamps(entries, [{ seq: 1, hash: h, response: forged }]).broken.reason, /unreadable|no token/);
+  const tampered = Buffer.from(token, 'base64'); tampered[tampered.length - 10] ^= 1;
+  assert.match(verifyTimestamps(entries, [{ seq: 1, hash: h, response: tampered.toString('base64') }]).broken.reason, /signature/);
 });

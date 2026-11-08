@@ -11,7 +11,7 @@ import { readVex, vexTemplate } from './vex.js';
 import { reportingClock } from './clock.js';
 import { reach } from './reach.js';
 import { endOfLife } from './vuln/eol.js';
-import { verifyChain, verifyTimestamps } from './journal.js';
+import { verifyChain, verifyTimestamps, readCertificates } from './journal.js';
 import { toText, toMarkdown, toJson, toSarif, clockText } from './report.js';
 import { defaultContext } from './net.js';
 import { VERSION } from './version.js';
@@ -24,7 +24,7 @@ Usage
   provetry reach [dir]            Which vulnerabilities are really called by your code (Go, with govulncheck)
   provetry eol   [dir|sbom.json]  Components whose support ends, before your own support period does
   provetry clock --since <date>   Article 14 reporting deadlines from the moment you became aware
-  provetry verify-journal <file> [--head <hash>]  Check an evidence journal exported from Provetry (hash chain)
+  provetry verify-journal <file> [--head <hash>] [--tsa-ca <pem>]  Check an evidence journal exported from Provetry (hash chain, timestamps)
 
 sbom options
   --format cyclonedx|spdx   default cyclonedx
@@ -250,7 +250,7 @@ export async function main(argv) {
   }
 
   if (cmd === 'verify-journal') {
-    const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { head: { type: 'string', multiple: true, default: [] } } });
+    const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { head: { type: 'string', multiple: true, default: [] }, 'tsa-ca': { type: 'string', multiple: true, default: [] } } });
     const file = positionals[0];
     if (!file) fail('give the exported journal: provetry verify-journal <file>');
     let doc;
@@ -263,9 +263,16 @@ export async function main(argv) {
       return;
     }
     const ts = Array.isArray(doc.timestamps) ? doc.timestamps : [];
-    const badTs = verifyTimestamps(doc.entries, ts);
-    if (badTs) {
-      process.stdout.write(`BROKEN at entry ${badTs.seq}: ${badTs.reason}.\n`);
+    // The authority's CA certificates: without them a token proves its signature, not who signed it.
+    let trust;
+    if (values['tsa-ca'].length) {
+      trust = [];
+      for (const f of values['tsa-ca']) { try { trust.push(...readCertificates(await readFile(f, 'utf8'))); } catch { fail(`${f} could not be read`); } }
+      if (!trust.length) fail('--tsa-ca: no certificate found');
+    }
+    const tsCheck = verifyTimestamps(doc.entries, ts, { trust });
+    if (tsCheck.broken) {
+      process.stdout.write(`BROKEN at entry ${tsCheck.broken.seq}: ${tsCheck.broken.reason}.\n`);
       process.exitCode = 1;
       return;
     }
@@ -280,10 +287,14 @@ export async function main(argv) {
     }
     const head = doc.entries.at(-1)?.hash ?? '(empty)';
     process.stdout.write(`OK: ${doc.entries.length} entr${doc.entries.length === 1 ? 'y' : 'ies'}, chain intact${values.head.length ? `, ${values.head.length} kept hash${values.head.length > 1 ? 'es' : ''} found` : ''}.\nLatest hash: ${head}\n`);
-    if (ts.length) {
-      const last = ts.reduce((a, b) => (Number(b.seq) > Number(a.seq) ? b : a));
-      process.stdout.write(`${ts.length} outside timestamp${ts.length > 1 ? 's' : ''} (RFC 3161) match the chain; the latest covers entry ${last.seq} (${last.at}, ${last.tsa}).\nTo check the authority's signature: openssl ts -verify -digest ${last.hash} -in <token> -CAfile <its CA certificate>\n`);
-    } else if (!values.head.length) process.stdout.write('Without a hash kept outside the service (--head) or an outside timestamp, a journal rewritten from the start would also pass.\n');
+    if (tsCheck.checked.length) {
+      const last = tsCheck.checked.reduce((a, b) => (b.seq > a.seq ? b : a));
+      const n = tsCheck.checked.length;
+      process.stdout.write(`${n} outside timestamp${n > 1 ? 's' : ''} (RFC 3161) match the chain, signature${n > 1 ? 's' : ''} valid; the latest covers entry ${last.seq} at ${last.genTime}, signed by ${last.signer}.\n`);
+      if (trust) process.stdout.write('The signing certificates chain to the authority certificate given (--tsa-ca).\n');
+      else process.stdout.write(`Who signed is not checked: give the authority's CA certificate with --tsa-ca <file> (or: openssl ts -verify -digest ${ts.find((t) => Number(t.seq) === last.seq).hash} -in <token> -CAfile <its CA certificate>).\n`);
+    }
+    if (!trust && !values.head.length) process.stdout.write('Without a hash kept outside the service (--head) or a timestamp checked against the authority (--tsa-ca), a journal rewritten from the start would also pass.\n');
     if (doc.head && doc.head !== head) process.stdout.write('Note: the "head" field of the file does not match its last entry.\n');
     return;
   }
