@@ -222,6 +222,15 @@ export async function main(argv) {
       options: { out: { type: 'string' }, product: { type: 'string' }, govulncheck: { type: 'string', default: 'govulncheck' }, 'no-imports': { type: 'boolean', default: false }, gate: { type: 'string' }, 'provetry-url': { type: 'string' }, offline: { type: 'boolean', default: false }, 'no-cache': { type: 'boolean', default: false } },
     });
     if (values.offline && values['no-cache']) fail('--offline needs the cache');
+    // The API key only ever goes to an https address (or this machine, for tests).
+    let serviceUrl = values['provetry-url'] ?? null;
+    if (serviceUrl && !/^https:\/\/[^/?#@\s]+(?:\/|$)/.test(serviceUrl) && !/^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/.test(serviceUrl)) {
+      process.stderr.write('provetry: --provetry-url must be an https address: no function level for npm and PyPI this time\n');
+      serviceUrl = null;
+    }
+    // The key stays in this process: tools run from here (govulncheck, go) do not inherit it.
+    const apiKey = process.env.PROVETRY_API_KEY;
+    delete process.env.PROVETRY_API_KEY;
     const dir = resolve(positionals[0] ?? '.');
     const st = await stat(dir).catch(() => null);
     if (!st?.isDirectory()) fail(`${positionals[0] ?? '.'} is not a directory`);
@@ -266,9 +275,8 @@ export async function main(argv) {
         const all = [...r.findings, ...r.suppressed];
         const functions = await rustFunctions(dir, all, u.components);
         // The records come from the Provetry service, for its customers (PROVETRY_API_KEY, --provetry-url).
-        const key = process.env.PROVETRY_API_KEY;
-        const service = key && values['provetry-url'] ? { url: values['provetry-url'], key } : null;
-        if (values['provetry-url'] && !/^https:\/\//.test(values['provetry-url']) && !/^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/.test(values['provetry-url'])) fail('--provetry-url must be https');
+        const key = apiKey;
+        const service = key && serviceUrl ? { url: serviceUrl, key } : null;
         for (const [k, v] of await packageFunctions(dir, all, u.components, await loadFunctionData(ctx, all, { service }))) functions.set(k, v);
         const statements = fromUsage(all, u.components, { functions });
         lists.push(statements);

@@ -128,7 +128,7 @@ To start, `--vex-template vex.json` writes an OpenVEX file with one `under_inves
 Most vulnerabilities reported in dependencies cannot be reached from your product: the function at fault is never called. For Go, [govulncheck](https://go.dev/doc/security/vuln/) builds the call graph of your code and knows. `provetry reach` runs it in every Go module of the repository and writes one OpenVEX document:
 
 ```sh
-go install golang.org/x/vuln/cmd/govulncheck@latest
+go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
 provetry reach . --product pkg:generic/gateway@2.4.0 --out reach.vex.json
 provetry scan . --vex reach.vex.json
 ```

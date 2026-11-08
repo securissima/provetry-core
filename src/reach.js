@@ -143,7 +143,7 @@ export async function reach(root, { govulncheck = 'govulncheck', product, exec =
     const v = await exec(govulncheck, ['-version'], { cwd: root, timeoutMs: 30_000 });
     version = (/govulncheck@?\s*v?([\d.]+)/i.exec(v.stdout + v.stderr) ?? [])[1] ?? '';
   } catch (e) {
-    if (e.code === 'ENOENT') throw Object.assign(new Error('govulncheck is not installed: go install golang.org/x/vuln/cmd/govulncheck@latest'), { code: 'NO_GOVULNCHECK' });
+    if (e.code === 'ENOENT') throw Object.assign(new Error('govulncheck is not installed: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4'), { code: 'NO_GOVULNCHECK' });
     throw e;
   }
   for (const dir of modules) {

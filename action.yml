@@ -107,6 +107,22 @@ runs:
       run: '"$SYFT" "$P_IMAGE" -o "cyclonedx-json=$P_OUT"'
 
     # Reachability reads the source; it says nothing about the other binaries an image may contain.
+    # govulncheck is installed in a step of its own, without the API key in its environment.
+    - name: Reachability tools (Go)
+      if: inputs.reachability != 'off' && inputs.image == ''
+      shell: bash
+      env:
+        P_PATH: ${{ inputs.path }}
+      run: |
+        set -uo pipefail
+        if [ -n "$(find "$P_PATH" -name go.mod -not -path '*/vendor/*' -not -path '*/node_modules/*' -print -quit)" ]; then
+          if command -v go >/dev/null; then
+            go install golang.org/x/vuln/cmd/govulncheck@v1.1.4 && echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          else
+            echo "::notice::Provetry: Go modules found but no Go toolchain: add actions/setup-go before this step for Go reachability."
+          fi
+        fi
+
     - name: Reachability
       id: reach
       if: inputs.reachability != 'off' && inputs.image == ''
@@ -116,21 +132,14 @@ runs:
         P_PRODUCT: pkg:generic/${{ steps.files.outputs.name }}@${{ steps.files.outputs.version }}
         P_DIR: ${{ steps.files.outputs.dir }}
         # With a Provetry account: the vulnerable functions of npm and PyPI advisories (function level).
+        # The CLI keeps the key to itself: the tools it runs do not inherit it.
         PROVETRY_API_KEY: ${{ inputs.api-key }}
         P_URL: ${{ inputs.app-url }}
       run: |
         set -uo pipefail
         args=()
         if [ -n "$PROVETRY_API_KEY" ] && [ -n "$P_URL" ]; then args=(--provetry-url "$P_URL"); fi
-        if [ -n "$(find "$P_PATH" -name go.mod -not -path '*/vendor/*' -not -path '*/node_modules/*' -print -quit)" ]; then
-          if command -v go >/dev/null; then
-            go install golang.org/x/vuln/cmd/govulncheck@latest
-            export PATH="$(go env GOPATH)/bin:$PATH"
-          else
-            echo "::notice::Provetry: Go modules found but no Go toolchain: add actions/setup-go before this step for Go reachability."
-          fi
-        fi
-        if node "$GITHUB_ACTION_PATH/src/cli.js" reach "$P_PATH" --product "$P_PRODUCT" --out "$P_DIR/reach.vex.json" --gate "$P_DIR/reach.gate.vex.json" "${args[@]}"; then
+        if node "$GITHUB_ACTION_PATH/src/cli.js" reach "$P_PATH" --product "$P_PRODUCT" --out "$P_DIR/reach.vex.json" --gate "$P_DIR/reach.gate.vex.json" ${args[@]+"${args[@]}"}; then
           echo "vex=$P_DIR/reach.vex.json" >> "$GITHUB_OUTPUT"
           echo "gate=$P_DIR/reach.gate.vex.json" >> "$GITHUB_OUTPUT"
         else
@@ -152,8 +161,8 @@ runs:
       run: |
         set -uo pipefail
         vex=(); [ -n "$P_VEX" ] && vex=(--vex "$P_VEX")
-        node "$GITHUB_ACTION_PATH/src/cli.js" scan "$P_SBOM" "${vex[@]}" --format markdown >> "$GITHUB_STEP_SUMMARY" || true
-        node "$GITHUB_ACTION_PATH/src/cli.js" scan "$P_SBOM" "${vex[@]}" --format sarif --out "$P_SARIF" --fail-on "$P_FAIL"
+        node "$GITHUB_ACTION_PATH/src/cli.js" scan "$P_SBOM" ${vex[@]+"${vex[@]}"} --format markdown >> "$GITHUB_STEP_SUMMARY" || true
+        node "$GITHUB_ACTION_PATH/src/cli.js" scan "$P_SBOM" ${vex[@]+"${vex[@]}"} --format sarif --out "$P_SARIF" --fail-on "$P_FAIL"
         echo "code=$?" >> "$GITHUB_OUTPUT"
 
     - name: Upload to Provetry

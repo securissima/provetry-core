@@ -22,7 +22,8 @@ const ID = /^GHSA(?:-[23456789cfghjmpqrvwx]{4}){3}$/;
 const IMPLICIT = new Set(['toString', 'valueOf', 'toJSON', 'then', 'catch', 'finally', 'next', 'get', 'set', 'has', 'apply', 'call', 'bind', 'default', 'constructor', 'handler', 'main', 'run', 'init', 'setup', 'register', 'middleware', 'plugin', 'install']);
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const validRecords = (id, records) => (Array.isArray(records) ? records : []).filter((r) => r && r.id === id && METHOD.test(String(r.method ?? '')) && typeof r.version === 'string' && Array.isArray(r.entryPoints) && Array.isArray(r.methods) && typeof r.whole === 'boolean');
+const strs = (a, n) => Array.isArray(a) && a.length <= n && a.every((x) => typeof x === 'string' && x.length <= 300);
+const validRecords = (id, records) => (Array.isArray(records) ? records : []).filter((r) => r && r.id === id && METHOD.test(String(r.method ?? '')) && typeof r.version === 'string' && typeof r.package === 'string' && strs(r.entryPoints, 100) && strs(r.methods, 200) && typeof r.whole === 'boolean');
 
 /**
  * The records for the findings' advisories (npm, PyPI): Map "id|purl" → record of that package.
@@ -42,11 +43,16 @@ export async function loadFunctionData(ctx, findings, { baseUrl = DATA_URL, serv
   }
   if (missing.length && service) {
     // One request for all of them (by batches), to the Provetry service: it answers for the records it has.
-    for (let i = 0; i < missing.length; i += 1000) {
-      const batch = missing.slice(i, i + 1000);
+    for (let i = 0; i < missing.length; i += 200) {
+      const batch = missing.slice(i, i + 200);
       try {
         const { status, json } = await getJson(ctx, `${service.url.replace(/\/+$/, '')}/api/v1/functions`, { method: 'POST', body: { ids: batch }, authorization: `Bearer ${service.key}` });
-        if (status !== 200 || !json || typeof json.records !== 'object') continue;
+        if (status !== 200 || !json || typeof json.records !== 'object') {
+          // Said once, without the key: a refused key or plan, or a limit, is the customer's to fix.
+          const why = status === 401 ? 'the API key was refused' : status === 403 ? 'the plan does not include it' : status === 429 ? 'too many requests for now' : `the service answered ${status}`;
+          process.stderr.write(`provetry: no function level for npm and PyPI this time: ${why}\n`);
+          break;
+        }
         for (const id of batch) { const r = Array.isArray(json.records[id]) ? json.records[id] : []; byId.set(id, r); cacheSet(ctx, `pvf:${id}`, r); }
       } catch { /* unreachable: no function level this time */ }
     }

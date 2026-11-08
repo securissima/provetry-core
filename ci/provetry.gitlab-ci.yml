@@ -25,7 +25,7 @@ provetry:
         case "$(uname -m)" in x86_64) ARCH=amd64 ;; aarch64|arm64) ARCH=arm64 ;; *) ARCH="" ;; esac
         GOV=$(curl -fsS 'https://go.dev/VERSION?m=text' | head -1 || true)
         if [ -n "$ARCH" ] && [ -n "$GOV" ] && curl -fsSL "https://go.dev/dl/${GOV}.linux-${ARCH}.tar.gz" | tar -C /usr/local -xz \
-           && PATH="/usr/local/go/bin:$HOME/go/bin:$PATH" go install golang.org/x/vuln/cmd/govulncheck@latest; then
+           && PATH="/usr/local/go/bin:$HOME/go/bin:$PATH" go install golang.org/x/vuln/cmd/govulncheck@v1.1.4; then
           export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
         else
           echo "Go could not be installed: Go reachability skipped."
