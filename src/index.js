@@ -15,3 +15,4 @@ export { memoryCache, fileCache } from './cache.js';
 export { fetchJson } from './net.js';
 export { VERSION } from './version.js';
 export { CVE_RE } from './util.js';
+export { verifyChain, entryHash, canonical } from './journal.js';

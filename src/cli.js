@@ -11,6 +11,7 @@ import { readVex, vexTemplate } from './vex.js';
 import { reportingClock } from './clock.js';
 import { reach } from './reach.js';
 import { endOfLife } from './vuln/eol.js';
+import { verifyChain } from './journal.js';
 import { toText, toMarkdown, toJson, toSarif, clockText } from './report.js';
 import { defaultContext } from './net.js';
 import { VERSION } from './version.js';
@@ -23,6 +24,7 @@ Usage
   provetry reach [dir]            Which vulnerabilities are really called by your code (Go, with govulncheck)
   provetry eol   [dir|sbom.json]  Components whose support ends, before your own support period does
   provetry clock --since <date>   Article 14 reporting deadlines from the moment you became aware
+  provetry verify-journal <file>  Check an evidence journal exported from Provetry (hash chain)
 
 sbom options
   --format cyclonedx|spdx   default cyclonedx
@@ -244,6 +246,24 @@ export async function main(argv) {
     process.stdout.write(out.join('\n') + '\n');
     if (r.results.some((x) => x.isEol || x.beforeSupportEnd)) process.exitCode = 1;
     else if (r.failed.length) process.exitCode = 2;
+    return;
+  }
+
+  if (cmd === 'verify-journal') {
+    const file = rest[0];
+    if (!file) fail('give the exported journal: provetry verify-journal <file>');
+    let doc;
+    try { doc = JSON.parse(await readFile(file, 'utf8')); } catch { fail(`${file} is not a JSON file`); }
+    if (doc?.format !== 'provetry-evidence-journal' || !Array.isArray(doc.entries)) fail(`${file} is not a Provetry evidence journal`);
+    const broken = verifyChain(doc.entries);
+    if (broken) {
+      process.stdout.write(`BROKEN at entry ${broken.seq}: ${broken.reason}.\n`);
+      process.exitCode = 1;
+      return;
+    }
+    const head = doc.entries.at(-1)?.hash ?? '(empty)';
+    process.stdout.write(`OK: ${doc.entries.length} entr${doc.entries.length === 1 ? 'y' : 'ies'}, chain intact.\nLatest hash: ${head}\n`);
+    if (doc.head && doc.head !== head) process.stdout.write('Note: the "head" field of the file does not match its last entry.\n');
     return;
   }
 
