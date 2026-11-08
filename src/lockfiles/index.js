@@ -5,6 +5,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { basename, dirname, join, relative } from 'node:path';
 import { makePurl, normalizePypi } from '../purl.js';
 import { manifestDirectNames } from './manifests.js';
+import { parseGradleLock, parsePom } from './java.js';
 
 /**
  * @typedef {{ type: string, name: string, version: string, purl: string, scope?: 'required'|'optional'|'dev',
@@ -29,6 +30,9 @@ export const PARSERS = {
   'composer.lock': parseComposerLock,
   'Gemfile.lock': parseGemfileLock,
   'packages.lock.json': parseNugetLock,
+  'gradle.lockfile': (t) => parseGradleLock(t),
+  'buildscript-gradle.lockfile': (t) => parseGradleLock(t, { buildscript: true }),
+  'pom.xml': parsePom,
 };
 
 /** Lists the lock files under `root` (not following symbolic links), up to `maxDepth` folders deep. */
@@ -72,7 +76,9 @@ export async function readLockFile(path, root = '.') {
     const names = await manifestDirectNames(dirname(path), basename(path));
     if (names) for (const c of comps) c.direct = names.has(c.type === 'pypi' ? normalizePypi(c.name) : c.name);
   }
-  return comps.map((c) => ({ ...c, sources: [src] }));
+  const out = comps.map((c) => ({ ...c, sources: [src] }));
+  if (comps.notice) Object.defineProperty(out, 'notice', { value: `${src} ${comps.notice}`, enumerable: false });
+  return out;
 }
 
 /** Merges components found in several files: one entry per purl, with every file it came from. */
@@ -99,14 +105,17 @@ export async function collect(root) {
   const files = await findLockFiles(root);
   const lists = [];
   const errors = [];
+  const notices = [];
   for (const f of files) {
     try {
-      lists.push(await readLockFile(f, root));
+      const list = await readLockFile(f, root);
+      if (list.notice) notices.push(list.notice);
+      lists.push(list);
     } catch (e) {
       errors.push({ file: relative(root, f) || basename(f), error: e.message });
     }
   }
-  return { components: mergeComponents(lists), files: files.map((f) => relative(root, f)), errors };
+  return { components: mergeComponents(lists), files: files.map((f) => relative(root, f)), errors, notices };
 }
 
 const comp = (type, name, version, extra = {}) => ({ type, name, version, purl: makePurl(type, name, version), scope: 'required', ...extra });

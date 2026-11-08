@@ -14,14 +14,14 @@ import { dirname, relative, resolve } from 'node:path';
 import { findLockFiles, readLockFile } from '../lockfiles/index.js';
 import { normalizePypi } from '../purl.js';
 import { readGraph } from './graph.js';
-import { projectFiles, readText, npmPackageOf, jsUse, pyUse, installedPython, PYPI_MODULES, PYPI_NEVER_ABSENT, rsUse, cargoManifest, phpUse, rbUse, csUse } from './imports.js';
+import { projectFiles, readText, npmPackageOf, jsUse, pyUse, installedPython, PYPI_MODULES, PYPI_NEVER_ABSENT, rsUse, cargoManifest, phpUse, rbUse, csUse, javaUse } from './imports.js';
 
 const ORDER = { imported: 3, loaded: 2, unknown: 1, not_loaded: 0 };
 
 /** What the repository's files use, per ecosystem, read once. */
 async function repoUse(root) {
   const { files, incomplete } = await projectFiles(root);
-  const big = { npm: [], pypi: [], cargo: [], composer: [], gem: [], nuget: [] };
+  const big = { npm: [], pypi: [], cargo: [], composer: [], gem: [], nuget: [], maven: [] };
   const cache = new Map();
   const once = (k, fn) => cache.get(k) ?? cache.set(k, fn()).get(k);
   return {
@@ -42,6 +42,7 @@ async function repoUse(root) {
     composer: () => once('composer', () => phpUse(root, files, big.composer)),
     gem: () => once('gem', () => rbUse(root, files, big.gem)),
     nuget: () => once('nuget', () => csUse(root, files, big.nuget)),
+    maven: () => once('maven', () => javaUse(root, files, big.maven)),
   };
 }
 
@@ -113,6 +114,18 @@ async function directUse(g, repo) {
     const names = [...imported.keys()];
     for (const [purl, n] of g.nodes) {
       const hit = names.find((x) => x === n.name || x.startsWith(`${n.name}.`));
+      set(purl, Boolean(hit), hit ? imported.get(hit) : [], false);
+    }
+  }
+  if (g.ecosystem === 'maven') {
+    // A Java package usually starts with the group ("org.apache.logging.log4j"), sometimes with the
+    // group and artifact; evidence of use only, never of absence.
+    const { imported } = await repo.maven();
+    const names = [...imported.keys()];
+    for (const [purl, n] of g.nodes) {
+      const [group, artifact] = n.name.split(':');
+      const prefixes = [group, `${group}.${artifact.replace(/-/g, '.')}`];
+      const hit = names.find((x) => prefixes.some((p) => x === p || x.startsWith(`${p}.`)));
       set(purl, Boolean(hit), hit ? imported.get(hit) : [], false);
     }
   }

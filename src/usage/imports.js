@@ -349,3 +349,18 @@ export async function csUse(root, files, big) {
   }
   return { imported, code };
 }
+
+// ---------- JVM languages: evidence of use only ----------
+export async function javaUse(root, files, big) {
+  const imported = new Map();
+  let code = 0;
+  for (const f of files) {
+    if (!/\.(?:java|kt|kts|scala|groovy)$/.test(f)) continue;
+    const src = await readText(root, f, big);
+    if (src == null) continue;
+    const L = liner(src);
+    code++;
+    for (const m of src.matchAll(/^\s*import\s+(?:static\s+)?([a-z][\w]*(?:\.[\w]+)+)/gm)) add(imported, m[1], f, L(m.index), 'imported');
+  }
+  return { imported, code };
+}

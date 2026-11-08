@@ -101,7 +101,40 @@ export function pyprojectNames(text) {
  * Names of the direct dependencies declared next to a lock file, or null when there is no manifest to read.
  * Python names come back normalised.
  */
+/**
+ * Gradle: the coordinates written in build.gradle(.kts) ("group:artifact:version" strings) and the
+ * version-catalog aliases they use (libs.foo.bar → gradle/libs.versions.toml, in this folder or above).
+ */
+export async function gradleNames(dir) {
+  const build = (await read(dir, 'build.gradle.kts')) ?? (await read(dir, 'build.gradle'));
+  if (build == null) return null;
+  const names = new Set();
+  for (const m of build.matchAll(/["']([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+)(?::[^"'\s]*)?["']/g)) names.add(`${m[1]}:${m[2]}`);
+  for (const m of build.matchAll(/\b(?:group|groupId)\s*[:=]\s*["']([^"']+)["']\s*,\s*(?:name|artifactId)\s*[:=]\s*["']([^"']+)["']/g)) names.add(`${m[1]}:${m[2]}`);
+  const refs = new Set([...build.matchAll(/\blibs\.((?:[A-Za-z0-9]+\.?)+)/g)].map((m) => m[1].replace(/\.$/, '')));
+  if (refs.size) {
+    let catalog = null;
+    for (let d = dir, i = 0; i < 4 && catalog == null; i++, d = join(d, '..')) catalog = await read(join(d, 'gradle'), 'libs.versions.toml');
+    let section = '';
+    for (const line of (catalog ?? '').split(/\r?\n/)) {
+      const h = /^\s*\[([^\]]+)\]/.exec(line);
+      if (h) { section = h[1].trim(); continue; }
+      if (section !== 'libraries') continue;
+      const k = /^\s*([A-Za-z0-9_-]+)\s*=\s*(.*)$/.exec(line);
+      if (!k) continue;
+      const alias = k[1].replace(/[-_]/g, '.');
+      if (!refs.has(alias)) continue;
+      const mod = /module\s*=\s*"([^":]+):([^"]+)"/.exec(k[2]) ?? /^"([^":]+):([^":]+)(?::[^"]*)?"/.exec(k[2].trim());
+      const gn = /group\s*=\s*"([^"]+)"[^}]*\bname\s*=\s*"([^"]+)"/.exec(k[2]);
+      const hit = mod ?? gn;
+      if (hit) names.add(`${hit[1]}:${hit[2]}`);
+    }
+  }
+  return names;
+}
+
 export async function manifestDirectNames(dir, lockName) {
+  if (lockName === 'gradle.lockfile' || lockName === 'buildscript-gradle.lockfile') return gradleNames(dir);
   if (lockName === 'yarn.lock' || lockName === 'pnpm-lock.yaml') {
     const t = await read(dir, 'package.json');
     return t ? jsonKeys(t, ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) : null;

@@ -24,7 +24,7 @@ Usage
   provetry sbom  [dir]            Write an SBOM from the lock files found in dir (default: .)
   provetry scan  [dir|sbom.json]  List known vulnerabilities, those exploited in the wild first
   provetry reach [dir]            Which vulnerable code your product really uses: function by function for Go
-                                  (govulncheck), package by package for npm, PyPI, Cargo, Composer, RubyGems, NuGet
+                                  (govulncheck), package by package for npm, PyPI, Cargo, Composer, RubyGems, NuGet, Java
   provetry eol   [dir|sbom.json]  Components whose support ends, before your own support period does
   provetry clock --since <date>   Article 14 reporting deadlines from the moment you became aware
   provetry verify-journal <file> [--head <hash>] [--tsa-ca <pem>]  Check an evidence journal exported from Provetry (hash chain, timestamps)
@@ -92,8 +92,9 @@ async function loadComponents(target) {
   const abs = resolve(target);
   const st = await stat(abs).catch(() => fail(`not found: ${target}`));
   if (st.isDirectory()) {
-    const { components, files, errors } = await collect(abs);
+    const { components, files, errors, notices } = await collect(abs);
     for (const e of errors) process.stderr.write(`provetry: ${clean(e.error)}\n`);
+    for (const n of notices ?? []) process.stderr.write(`provetry: note: ${clean(n)}\n`);
     if (!files.length) fail(`no supported lock file found in ${target} (run "provetry --help" for the list, or pass an SBOM)`);
     const unknownDirect = [...new Set(components.filter((c) => typeof c.direct !== 'boolean').flatMap((c) => c.sources))];
     // Paths in reports are relative to where you run the command, so code-scanning tools can find the files.
@@ -252,7 +253,7 @@ export async function main(argv) {
         summary.push(`${u.projects.length} lock file${u.projects.length > 1 ? 's' : ''}: ${n('not_affected')} vulnerable package${n('not_affected') === 1 ? '' : 's'} never loaded, ${n('under_investigation')} loaded`);
       }
     }
-    if (!lists.length) fail('nothing to analyse: no go.mod and no lock file with a dependency graph (package-lock.json, pnpm-lock.yaml, yarn.lock, Cargo.lock, poetry.lock, uv.lock, composer.lock, Gemfile.lock, packages.lock.json, requirements.txt from pip-compile)');
+    if (!lists.length) fail('nothing to analyse: no go.mod and no lock file with a dependency graph (package-lock.json, pnpm-lock.yaml, yarn.lock, Cargo.lock, poetry.lock, uv.lock, composer.lock, Gemfile.lock, packages.lock.json, gradle.lockfile, pom.xml, requirements.txt from pip-compile)');
     const doc = mergeReach(lists, { product, tools });
     await emit(JSON.stringify(doc, null, 2) + '\n', values.out);
     // The statements a CI gate may rely on: govulncheck's (function level). The import analysis only

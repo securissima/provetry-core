@@ -352,6 +352,15 @@ export function nugetGraph(text) {
   return g;
 }
 
+// ---------- Java: no edges (Gradle lock files and pom.xml do not give them): evidence of use only ----------
+export async function javaGraph(path) {
+  const { readLockFile } = await import('../lockfiles/index.js');
+  const g = graph('maven');
+  g.complete = false;
+  for (const c of await readLockFile(path)) { node(g, 'maven', c.name, c.version); if (c.direct) g.roots.add(c.purl); }
+  return g;
+}
+
 /** The graph of one lock file, or null for a format without one here (go.mod: govulncheck does better). */
 export async function readGraph(path) {
   const text = await readFile(path, 'utf8');
@@ -366,5 +375,6 @@ export async function readGraph(path) {
   if (name === 'composer.lock') return composerGraph(text, dir);
   if (name === 'Gemfile.lock') return gemfileGraph(text);
   if (name === 'packages.lock.json') return nugetGraph(text);
+  if (name === 'gradle.lockfile' || name === 'buildscript-gradle.lockfile' || name === 'pom.xml') return javaGraph(path);
   return null; // Pipfile.lock has no edges; go.mod is for govulncheck
 }

@@ -9,7 +9,7 @@ Since 11 September 2026, manufacturers of products with digital elements sold in
 
 - **`provetry sbom`** reads the lock files in your repository and writes a CycloneDX 1.6 or SPDX 2.3 SBOM;
 - **`provetry scan`** lists the known vulnerabilities in those components, **the ones exploited in the wild first** (CISA KEV and ENISA's EU Vulnerability Database), with the version that fixes each one, and takes your VEX statements into account;
-- **`provetry reach`** tells which vulnerable code your product really uses: for Go, function by function (with the Go team's govulncheck); for npm, PyPI, Cargo, Composer, RubyGems and NuGet, package by package (is it loaded at all?), and for Rust the affected functions RustSec names, with the evidence;
+- **`provetry reach`** tells which vulnerable code your product really uses: for Go, function by function (with the Go team's govulncheck); for npm, PyPI, Cargo, Composer, RubyGems, NuGet and Java, package by package (is it loaded at all?), and for Rust the affected functions RustSec names, with the evidence;
 - **`provetry clock`** gives the Article 14 deadlines from the moment you became aware.
 
 Free, open source, no account, no telemetry, no dependency. Node.js 22 or later.
@@ -70,12 +70,15 @@ Provetry 0.1.0 · my-product · 412 components scanned (138 development dependen
 | PHP | `composer.lock` |
 | Ruby | `Gemfile.lock` |
 | .NET | `packages.lock.json` |
+| Java, Kotlin, Scala | `gradle.lockfile`, `buildscript-gradle.lockfile` (Gradle dependency locking); `pom.xml` (direct dependencies only, see below) |
 
 Provetry looks for them up to six directories deep, skipping `node_modules`, `vendor`, `.git` and similar, and merges what it finds: a monorepo with a Node front end and a Go back end gives one SBOM. Development dependencies are recognised where the lock file says so; they are marked in the SBOM and left out of the scan unless you ask.
 
-Which dependencies are direct (the ones you asked for) comes from the lock file when it records it (npm, pnpm, Go, NuGet, Gemfile.lock), otherwise from the manifest next to it: `package.json` for Yarn, `Cargo.toml`, `composer.json`, `pyproject.toml` or `Pipfile` for Python. For `requirements.txt`, only pip-compile's `# via` comments tell; without them, Provetry says it cannot tell. For Go, the version in the `toolchain` directive is scanned too, since the standard library has advisories of its own (the `go` line is only a minimum, so it is not used).
+Which dependencies are direct (the ones you asked for) comes from the lock file when it records it (npm, pnpm, Go, NuGet, Gemfile.lock), otherwise from the manifest next to it: `package.json` for Yarn, `Cargo.toml`, `composer.json`, `pyproject.toml` or `Pipfile` for Python, `build.gradle(.kts)` and the version catalog `gradle/libs.versions.toml` for Gradle. For `requirements.txt`, only pip-compile's `# via` comments tell; without them, Provetry says it cannot tell. For Go, the version in the `toolchain` directive is scanned too, since the standard library has advisories of its own (the `go` line is only a minimum, so it is not used).
 
 A lock file that cannot be read stops `provetry sbom` (an SBOM must not silently miss components) and makes `provetry scan` exit 2.
+
+Maven has no lock file: from `pom.xml`, Provetry reads the direct dependencies (the minimum the CRA asks of an SBOM), with versions set by properties or by this file's `dependencyManagement`, and says which ones it could not resolve (set by a parent POM or an imported BOM, which only Maven resolves). For the full tree, add the [CycloneDX Maven plugin](https://github.com/CycloneDX/cyclonedx-maven-plugin) to the build and pass its SBOM. With Gradle, turn on [dependency locking](https://docs.gradle.org/current/userguide/dependency_locking.html): `gradle.lockfile` lists every resolved component.
 
 For what lock files cannot see (container images, firmware, vendored C libraries), generate an SBOM with your build tooling, for example [Syft](https://github.com/anchore/syft), and pass it to `provetry scan`: CycloneDX and SPDX JSON are both read.
 
@@ -139,7 +142,7 @@ What it cannot see, and the document says so: calls through reflection, cgo or p
 
 ### Other ecosystems: is the vulnerable package loaded at all?
 
-For npm, PyPI, Cargo, Composer, RubyGems and NuGet, `provetry reach` reads the dependency graph in the lock files and the files of the whole repository (nothing is executed), then looks the vulnerabilities up (OSV.dev; `--offline` uses the cache only):
+For npm, PyPI, Cargo, Composer, RubyGems, NuGet and Java (Gradle, Maven), `provetry reach` reads the dependency graph in the lock files and the files of the whole repository (nothing is executed), then looks the vulnerabilities up (OSV.dev; `--offline` uses the cache only):
 
 - **Never loaded**: nothing in the repository imports, names or runs the package, nor any package that leads to it. `not_affected`, justification `vulnerable_code_not_in_execute_path`, with the chain that brings it in (`left-pad > lodash`) as evidence. Typical cases: a dependency nobody uses any more, a heavy optional part of a library you do not touch, type packages.
 - **Loaded**: imported by a file of the repository (file and line given), or depended on by something that is. `under_investigation`: at this level, nobody can say whether the vulnerable function itself is called.
@@ -149,7 +152,7 @@ The dangerous mistake is to call a package unused when it is not, so every doubt
 
 - A package named anywhere counts as used: in a configuration that loads plugins by name, a style sheet, a script of `package.json` (`node -r dotenv/config`), a Dockerfile, a Makefile, a Procfile, a shell script, a CI file, a Python string (`'django.db.backends.postgresql'`, `"mysql+pymysql://"`).
 - Loaded whatever the code says: npm packages with an install script (seen in `package-lock.json` and pnpm lock files that record it; yarn.lock does not); Composer packages autoloaded on every request (`files`), Composer plugins, packages registered by Laravel's package discovery; every gem of the Gemfile with `Bundler.require`.
-- No conclusion of absence when: import names are not sure (Python without a project virtual environment and outside a built-in list; packages with commands or plugin entry points; database drivers and servers started by name; Composer packages without a namespace or found at run time; every RubyGems and NuGet package); a lock file gives no complete graph (a `requirements.txt` not made by pip-compile) or cannot be analysed (`Pipfile.lock`); a file cannot be read (too many files, too large, a link outside the repository); code lives outside the repository (a linked folder, a Cargo path dependency).
+- No conclusion of absence when: import names are not sure (Python without a project virtual environment and outside a built-in list; packages with commands or plugin entry points; database drivers and servers started by name; Composer packages without a namespace or found at run time; every RubyGems, NuGet and Java package: Gradle lock files and `pom.xml` give no dependency graph); a lock file gives no complete graph (a `requirements.txt` not made by pip-compile) or cannot be analysed (`Pipfile.lock`); a file cannot be read (too many files, too large, a link outside the repository); code lives outside the repository (a linked folder, a Cargo path dependency).
 
 **Rust, one level further.** RustSec advisories name the affected functions (`smallvec::SmallVec::insert_many`). When the project's own code is the only thing that loads the crate (no other loaded crate depends on it), uses none of its macros, and no file of the repository mentions any of those functions, the statement is `not_affected` with that evidence; when a file mentions one, the note gives the file and line to check first. No conclusion when Rust may call one of them without its name in the source: trait methods and operators (`<T as Drop>::drop`, `index`, `next`, `fmt`, `serialize`…), the crate's macros, attributes or derives used in the project, re-exports, code generated at build time (`OUT_DIR`, a `build.rs` that uses the crate). A name mentioned anywhere counts; functions of the crate that call the affected ones internally, and calls through another crate's generic code, are not seen.
 

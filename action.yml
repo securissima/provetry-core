@@ -19,7 +19,7 @@ inputs:
     description: A container image to describe instead of the lock files (generated with Syft), e.g. ghcr.io/acme/gateway:2.4.0.
     default: ""
   reachability:
-    description: "auto: tell used from never-used vulnerable code (govulncheck for Go modules, import analysis for npm, PyPI, Cargo, Composer, RubyGems, NuGet). off: skip."
+    description: "auto: tell used from never-used vulnerable code (govulncheck for Go modules, import analysis for npm, PyPI, Cargo, Composer, RubyGems, NuGet, Java). off: skip."
     default: auto
   fail-on:
     description: "Fail the job when a finding reaches: exploited, critical, high, medium, low, any, or none."
