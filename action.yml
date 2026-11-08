@@ -115,9 +115,13 @@ runs:
         P_PATH: ${{ inputs.path }}
         P_PRODUCT: pkg:generic/${{ steps.files.outputs.name }}@${{ steps.files.outputs.version }}
         P_DIR: ${{ steps.files.outputs.dir }}
+        # With a Provetry account: the vulnerable functions of npm and PyPI advisories (function level).
+        PROVETRY_API_KEY: ${{ inputs.api-key }}
+        P_URL: ${{ inputs.app-url }}
       run: |
         set -uo pipefail
         args=()
+        if [ -n "$PROVETRY_API_KEY" ] && [ -n "$P_URL" ]; then args=(--provetry-url "$P_URL"); fi
         if [ -n "$(find "$P_PATH" -name go.mod -not -path '*/vendor/*' -not -path '*/node_modules/*' -print -quit)" ]; then
           if command -v go >/dev/null; then
             go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -126,7 +130,7 @@ runs:
             echo "::notice::Provetry: Go modules found but no Go toolchain: add actions/setup-go before this step for Go reachability."
           fi
         fi
-        if node "$GITHUB_ACTION_PATH/src/cli.js" reach "$P_PATH" --product "$P_PRODUCT" --out "$P_DIR/reach.vex.json" --gate "$P_DIR/reach.gate.vex.json"; then
+        if node "$GITHUB_ACTION_PATH/src/cli.js" reach "$P_PATH" --product "$P_PRODUCT" --out "$P_DIR/reach.vex.json" --gate "$P_DIR/reach.gate.vex.json" "${args[@]}"; then
           echo "vex=$P_DIR/reach.vex.json" >> "$GITHUB_OUTPUT"
           echo "gate=$P_DIR/reach.gate.vex.json" >> "$GITHUB_OUTPUT"
         else

@@ -7,15 +7,16 @@ const UA = `provetry/${VERSION} (+https://provetry.com)`;
 /**
  * Fetches JSON. Returns { status, json }. Never throws for an HTTP status; throws on network failure or timeout.
  * @param {string} url
- * @param {{ method?: string, body?: unknown, timeoutMs?: number, maxBytes?: number }} [opts]
+ * @param {{ method?: string, body?: unknown, timeoutMs?: number, maxBytes?: number, authorization?: string }} [opts]
+ * With `authorization`, redirects are refused: the credential goes to the address given and nowhere else.
  */
-export async function fetchJson(url, { method = 'GET', body, timeoutMs = 30_000, maxBytes = 64 * 1024 * 1024 } = {}) {
+export async function fetchJson(url, { method = 'GET', body, timeoutMs = 30_000, maxBytes = 64 * 1024 * 1024, authorization } = {}) {
   const res = await fetch(url, {
     method,
-    headers: { 'user-agent': UA, accept: 'application/json', ...(body ? { 'content-type': 'application/json' } : {}) },
+    headers: { 'user-agent': UA, accept: 'application/json', ...(body ? { 'content-type': 'application/json' } : {}), ...(authorization ? { authorization } : {}) },
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(timeoutMs),
-    redirect: 'follow',
+    redirect: authorization ? 'error' : 'follow',
   });
   const len = Number(res.headers.get('content-length') ?? 0);
   if (len > maxBytes) throw new Error(`response too large from ${new URL(url).host}`);

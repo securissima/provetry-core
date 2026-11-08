@@ -183,6 +183,15 @@ test('npm and PyPI, function level from the vulnerable-functions data', async ()
   const data = await loadFunctionData(ctx, findings, { baseUrl: 'https://example.test/data' });
   assert.equal(data.size, 2, 'a record for another advisory is refused');
   assert.equal((await loadFunctionData(ctx, findings)).size, 0, 'no data source pinned yet: nothing read');
+  // From the Provetry service: one request, the workspace's key, no redirect followed.
+  const calls = [];
+  const svcCtx = { fetchJson: async (url, opts) => { calls.push({ url, opts }); return { status: 200, json: { ref: 'abc', records: { 'GHSA-2j2x-2gpw-g8fm': records['GHSA-2j2x-2gpw-g8fm'] } } }; } };
+  const fromSvc = await loadFunctionData(svcCtx, findings, { service: { url: 'https://app.provetry.example/', key: 'pv_test' } });
+  assert.equal(fromSvc.size, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://app.provetry.example/api/v1/functions');
+  assert.equal(calls[0].opts.authorization, 'Bearer pv_test');
+  assert.deepEqual(calls[0].opts.body.ids.sort(), ['GHSA-2j2x-2gpw-g8fm', 'GHSA-wwww-wwww-wwww', 'GHSA-xxxx-xxxx-xxxx']);
   assert.ok(urls[0].startsWith('https://example.test/data/GHSA-'));
   const run = async (code) => { const dir = make(code); return packageFunctions(dir, findings, (await usage(dir)).components, data); };
   let r = await run("const flatten = require('flat');\nflatten({ a: 1 });\n");

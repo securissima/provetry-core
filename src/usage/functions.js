@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Function level for npm and PyPI, from open data: Provetry's vulnerable-functions records
-// (github.com/Enigmacker/provetry-vulnerable-functions) give, for an advisory, the public functions of the
+// Function level for npm and PyPI, from Provetry's vulnerable-functions records (served to customers by
+// the Provetry service, with their API key) which give, for an advisory, the public functions of the
 // package that lead to the code its fix changed. When the project's own code is the only thing that loads
 // the package and no file of the repository mentions any of those functions, the vulnerable code is not
 // called through them. Nothing is concluded when the record has no function-level answer ("whole"), when
@@ -22,31 +22,52 @@ const ID = /^GHSA(?:-[23456789cfghjmpqrvwx]{4}){3}$/;
 const IMPLICIT = new Set(['toString', 'valueOf', 'toJSON', 'then', 'catch', 'finally', 'next', 'get', 'set', 'has', 'apply', 'call', 'bind', 'default', 'constructor', 'handler', 'main', 'run', 'init', 'setup', 'register', 'middleware', 'plugin', 'install']);
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** The records for the findings' advisories (npm, PyPI): Map "id|purl" → record of that package. */
-export async function loadFunctionData(ctx, findings, { baseUrl = DATA_URL } = {}) {
+const validRecords = (id, records) => (Array.isArray(records) ? records : []).filter((r) => r && r.id === id && METHOD.test(String(r.method ?? '')) && typeof r.version === 'string' && Array.isArray(r.entryPoints) && Array.isArray(r.methods) && typeof r.whole === 'boolean');
+
+/**
+ * The records for the findings' advisories (npm, PyPI): Map "id|purl" → record of that package.
+ * Read from the Provetry service with the workspace's API key (`service: { url, key }`: the records are
+ * for its customers), or from a published copy of the data (`baseUrl`). Neither: nothing is read.
+ */
+export async function loadFunctionData(ctx, findings, { baseUrl = DATA_URL, service = null } = {}) {
   const out = new Map();
-  if (!baseUrl) return out;
+  if (!baseUrl && !service) return out;
   const wanted = findings.filter((f) => f.component.type === 'npm' || f.component.type === 'pypi');
+  const ids = [...new Set(wanted.map((f) => f.ids.find((x) => ID.test(x))).filter(Boolean))];
   const byId = new Map();
+  const missing = [];
+  for (const id of ids) {
+    const cached = cacheGet(ctx, `pvf:${id}`, MAX_AGE);
+    if (cached != null) byId.set(id, cached); else missing.push(id);
+  }
+  if (missing.length && service) {
+    // One request for all of them (by batches), to the Provetry service: it answers for the records it has.
+    for (let i = 0; i < missing.length; i += 1000) {
+      const batch = missing.slice(i, i + 1000);
+      try {
+        const { status, json } = await getJson(ctx, `${service.url.replace(/\/+$/, '')}/api/v1/functions`, { method: 'POST', body: { ids: batch }, authorization: `Bearer ${service.key}` });
+        if (status !== 200 || !json || typeof json.records !== 'object') continue;
+        for (const id of batch) { const r = Array.isArray(json.records[id]) ? json.records[id] : []; byId.set(id, r); cacheSet(ctx, `pvf:${id}`, r); }
+      } catch { /* unreachable: no function level this time */ }
+    }
+  } else if (missing.length) {
+    for (const id of missing) {
+      try {
+        const { status, json } = await getJson(ctx, `${baseUrl}/${id}.json`);
+        const records = status === 200 && Array.isArray(json) ? json : [];
+        // A missing record is an answer; a server error is not (tried again next time).
+        if (status === 200 || status === 404) cacheSet(ctx, `pvf:${id}`, records);
+        byId.set(id, records);
+      } catch { byId.set(id, []); }
+    }
+  }
   for (const f of wanted) {
     const id = f.ids.find((x) => ID.test(x));
     if (!id) continue;
-    if (!byId.has(id)) {
-      let records = cacheGet(ctx, `pvf:${id}`, MAX_AGE);
-      if (records == null) {
-        try {
-          const { status, json } = await getJson(ctx, `${baseUrl}/${id}.json`);
-          records = status === 200 && Array.isArray(json) ? json : [];
-          // A missing record is an answer; a server error is not (tried again next time).
-          if (status === 200 || status === 404) cacheSet(ctx, `pvf:${id}`, records);
-        } catch { records = []; }
-      }
-      // Only records of this advisory, made by the method this release knows.
-      records = (records ?? []).filter((r) => r && r.id === id && METHOD.test(String(r.method ?? '')) && typeof r.version === 'string' && Array.isArray(r.entryPoints) && Array.isArray(r.methods) && typeof r.whole === 'boolean');
-      byId.set(id, records ?? []);
-    }
+    // Only records of this advisory, made by the method this release knows.
+    const records = validRecords(id, byId.get(id));
     const name = f.component.type === 'pypi' ? normalizePypi(f.component.name) : f.component.name;
-    const rec = byId.get(id).find((r) => (r.ecosystem === 'npm' && f.component.type === 'npm' && r.package === name) || (r.ecosystem === 'PyPI' && f.component.type === 'pypi' && normalizePypi(r.package) === name));
+    const rec = records.find((r) => (r.ecosystem === 'npm' && f.component.type === 'npm' && r.package === name) || (r.ecosystem === 'PyPI' && f.component.type === 'pypi' && normalizePypi(r.package) === name));
     if (rec) out.set(`${f.id}|${f.component.purl}`, { ...rec, advisory: id });
   }
   return out;
