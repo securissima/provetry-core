@@ -71,7 +71,7 @@ test('the standard library and testdata modules are left out', () => {
 
 test('without govulncheck: a clear message', async () => {
   const exec = async () => { throw Object.assign(new Error('x'), { code: 'ENOENT' }); };
-  await assert.rejects(reach(root, { exec }), /go install golang\.org\/x\/vuln\/cmd\/govulncheck@latest/);
+  await assert.rejects(reach(root, { exec }), /go install golang\.org\/x\/vuln\/cmd\/govulncheck@v1.1.4/);
 });
 
 test('merge: imported but never called describes the product better than not imported', () => {
