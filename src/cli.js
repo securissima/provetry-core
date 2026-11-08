@@ -24,7 +24,7 @@ Usage
   provetry reach [dir]            Which vulnerabilities are really called by your code (Go, with govulncheck)
   provetry eol   [dir|sbom.json]  Components whose support ends, before your own support period does
   provetry clock --since <date>   Article 14 reporting deadlines from the moment you became aware
-  provetry verify-journal <file>  Check an evidence journal exported from Provetry (hash chain)
+  provetry verify-journal <file> [--head <hash>]  Check an evidence journal exported from Provetry (hash chain)
 
 sbom options
   --format cyclonedx|spdx   default cyclonedx
@@ -250,7 +250,8 @@ export async function main(argv) {
   }
 
   if (cmd === 'verify-journal') {
-    const file = rest[0];
+    const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { head: { type: 'string', multiple: true, default: [] } } });
+    const file = positionals[0];
     if (!file) fail('give the exported journal: provetry verify-journal <file>');
     let doc;
     try { doc = JSON.parse(await readFile(file, 'utf8')); } catch { fail(`${file} is not a JSON file`); }
@@ -261,8 +262,18 @@ export async function main(argv) {
       process.exitCode = 1;
       return;
     }
+    // A hash kept earlier (from a dossier, an e-mail, an earlier export) must still be in the chain:
+    // otherwise the history was cut or rewritten since, even if the new chain is consistent.
+    for (const h of values.head) {
+      if (!doc.entries.some((e) => e.hash === h.trim().toLowerCase())) {
+        process.stdout.write(`BROKEN: the hash ${h} kept earlier is not in this journal: its history was cut or rewritten since.\n`);
+        process.exitCode = 1;
+        return;
+      }
+    }
     const head = doc.entries.at(-1)?.hash ?? '(empty)';
-    process.stdout.write(`OK: ${doc.entries.length} entr${doc.entries.length === 1 ? 'y' : 'ies'}, chain intact.\nLatest hash: ${head}\n`);
+    process.stdout.write(`OK: ${doc.entries.length} entr${doc.entries.length === 1 ? 'y' : 'ies'}, chain intact${values.head.length ? `, ${values.head.length} kept hash${values.head.length > 1 ? 'es' : ''} found` : ''}.\nLatest hash: ${head}\n`);
+    if (!values.head.length) process.stdout.write('Without a hash kept outside the service (--head), a journal rewritten from the start would also pass.\n');
     if (doc.head && doc.head !== head) process.stdout.write('Note: the "head" field of the file does not match its last entry.\n');
     return;
   }

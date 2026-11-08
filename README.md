@@ -152,10 +152,10 @@ Only components endoflife.date knows by package URL are checked: frameworks, run
 ## Checking an evidence journal
 
 ```sh
-provetry verify-journal provetry-journal.json
+provetry verify-journal provetry-journal.json --head <a hash you kept earlier>
 ```
 
-The Provetry service keeps the manufacturer's decisions (assessments, reports submitted, exercises, advisories published) in a journal where each entry is chained to the one before by a SHA-256 hash. This command checks an exported journal without trusting the service: it recomputes every hash and says where the chain breaks, if it does (exit code 1). The method: `hash = SHA-256(previous hash + "\n" + canonical JSON of {seq, at, workspace, actor, action, subject, details})`, keys sorted at every level, 64 zeros before the first entry.
+The Provetry service keeps the manufacturer's decisions (assessments, reports submitted, exercises, advisories published) in a journal where each entry is chained to the one before by a SHA-256 hash. This command checks an exported journal: it recomputes every hash and says where the chain breaks, if it does (exit code 1). A consistent chain alone does not prove that nobody rewrote it from the start: keep the latest hash outside the service from time to time (each compliance dossier prints it) and pass it with `--head`; if it is no longer in a later export, the history was cut or rewritten. The method: `hash = SHA-256(previous hash + "\n" + canonical JSON of {seq, at, workspace, actor, action, subject, details})`, keys sorted at every level, 64 zeros before the first entry.
 
 ## Article 14 reporting clock
 

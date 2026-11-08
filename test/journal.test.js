@@ -40,6 +40,10 @@ test('CLI: verify-journal says OK or where it breaks', () => {
   writeFileSync(ok, JSON.stringify({ format: 'provetry-evidence-journal', entries: c, head: c[2].hash }));
   const cli = new URL('../src/cli.js', import.meta.url).pathname;
   assert.match(execFileSync(process.execPath, [cli, 'verify-journal', ok], { encoding: 'utf8' }), /^OK: 3 entries, chain intact\./);
+  assert.match(execFileSync(process.execPath, [cli, 'verify-journal', ok, '--head', c[1].hash], { encoding: 'utf8' }), /1 kept hash found/);
+  let cut = 0;
+  try { execFileSync(process.execPath, [cli, 'verify-journal', ok, '--head', 'f'.repeat(64)], { encoding: 'utf8' }); } catch (e) { cut = e.status; }
+  assert.equal(cut, 1, 'a kept hash missing from the journal: rewritten history');
   const bad = join(dir, 'bad.json');
   c[1].at = '2026-11-08T09:00:00.000Z';
   writeFileSync(bad, JSON.stringify({ format: 'provetry-evidence-journal', entries: c }));
