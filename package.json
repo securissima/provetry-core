@@ -1,16 +1,47 @@
 {
   "name": "provetry",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "SBOM and exploited-vulnerability watch for the EU Cyber Resilience Act: CycloneDX and SPDX from your lock files, OSV, CISA KEV and EUVD, VEX, and the Article 14 reporting clock.",
   "type": "module",
   "license": "AGPL-3.0-only",
   "author": "Enigmacker",
-  "repository": { "type": "git", "url": "git+https://github.com/Enigmacker/provetry-core.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Enigmacker/provetry-core.git"
+  },
   "homepage": "https://provetry.com",
-  "keywords": ["sbom", "cyclonedx", "spdx", "vulnerability", "osv", "kev", "euvd", "vex", "cyber-resilience-act", "cra", "enisa"],
-  "bin": { "provetry": "src/cli.js" },
-  "exports": { ".": "./src/index.js" },
-  "files": ["src", "README.md", "LICENSE"],
-  "scripts": { "test": "node --test test/*.test.js" },
-  "engines": { "node": ">=22" }
+  "keywords": [
+    "sbom",
+    "cyclonedx",
+    "spdx",
+    "vulnerability",
+    "osv",
+    "kev",
+    "euvd",
+    "vex",
+    "cyber-resilience-act",
+    "cra",
+    "enisa"
+  ],
+  "bin": {
+    "provetry": "src/cli.js"
+  },
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1"
+  }
 }

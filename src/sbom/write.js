@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Writes the components as a CycloneDX 1.6 or an SPDX 2.3 document (JSON), the two formats the CRA's
+// Writes the components as a CycloneDX 1.6, an SPDX 2.3 or an SPDX 3.0.1 document (JSON), the formats the CRA's
 // "commonly used and machine-readable format" points to in practice.
 import { randomUUID, createHash } from 'node:crypto';
 import { TOOL } from '../version.js';
@@ -115,6 +115,85 @@ export function toSpdx(product, components, opts = {}) {
             ? [{ spdxElementId: rootId, relationshipType: 'DEPENDS_ON', relatedSpdxElement: p.SPDXID }]
             : [],
       ),
+    ],
+  };
+}
+
+// SPDX 3.0.1 (JSON-LD), the version Germany's BSI asks for in TR-03183-2 (2.1): the same content as the
+// SPDX 2.3 document, in the 3.x model of elements and relationships, with the core and software profiles.
+const SPDX3_ALG = {
+  'SHA-1': 'sha1', 'SHA-256': 'sha256', 'SHA-384': 'sha384', 'SHA-512': 'sha512', MD5: 'md5',
+  'SHA3-256': 'sha3_256', 'SHA3-384': 'sha3_384', 'SHA3-512': 'sha3_512',
+  'BLAKE2b-256': 'blake2b256', 'BLAKE2b-384': 'blake2b384', 'BLAKE2b-512': 'blake2b512', BLAKE3: 'blake3',
+};
+
+export function toSpdx3(product, components, opts = {}) {
+  const now = (opts.now ?? new Date()).toISOString().replace(/\.\d+Z$/, 'Z');
+  const name = `${product.name}${product.version ? `-${product.version}` : ''}`;
+  const ns = `https://provetry.com/spdx/${encodeURIComponent(name)}-${opts.serial ?? randomUUID()}`;
+  const ci = '_:creationinfo';
+  const toolId = `${ns}#tool`;
+  const orgId = `${ns}#supplier`;
+  const creatorId = product.supplier ? orgId : `${ns}#provetry`;
+  const rootId = `${ns}#product`;
+  const sbomId = `${ns}#sbom`;
+  const ids = new Set();
+  const pkgs = components.map((c) => {
+    let id = `${ns}#${spdxId(`Package-${c.type}-${c.name}-${c.version}`).slice('SPDXRef-'.length)}`;
+    if (ids.has(id)) id = `${id}-${createHash('sha256').update(c.purl).digest('hex').slice(0, 8)}`;
+    ids.add(id);
+    const hashes = (c.hashes ?? []).filter((h) => SPDX3_ALG[h.alg] && /^[0-9a-f]+$/i.test(h.content)).map((h) => ({ type: 'Hash', algorithm: SPDX3_ALG[h.alg], hashValue: h.content.toLowerCase() }));
+    return {
+      type: 'software_Package',
+      spdxId: id,
+      creationInfo: ci,
+      name: c.name,
+      software_packageVersion: c.version,
+      software_packageUrl: c.purl,
+      software_primaryPurpose: 'library',
+      ...(hashes.length ? { verifiedUsing: hashes } : {}),
+      ...(c.scope === 'dev' ? { comment: 'Development dependency (not shipped).' } : {}),
+    };
+  });
+  // Only what is known, as in SPDX 2.3: the product depends on its top-level dependencies (development
+  // ones scoped as such); transitive components carry no relationship rather than a guessed one.
+  const rels = [];
+  const direct = pkgs.filter((_, i) => components[i].direct && components[i].scope !== 'dev').map((p) => p.spdxId);
+  const dev = pkgs.filter((_, i) => components[i].scope === 'dev').map((p) => p.spdxId);
+  if (direct.length) rels.push({ type: 'Relationship', spdxId: `${ns}#depends-on`, creationInfo: ci, from: rootId, relationshipType: 'dependsOn', to: direct, completeness: opts.incomplete?.length ? 'incomplete' : 'complete' });
+  if (dev.length) rels.push({ type: 'LifecycleScopedRelationship', spdxId: `${ns}#dev-depends-on`, creationInfo: ci, from: rootId, relationshipType: 'dependsOn', scope: 'development', to: dev });
+  const agents = [
+    { type: 'Tool', spdxId: toolId, creationInfo: ci, name: `${TOOL.name}-${TOOL.version}` },
+    { type: 'Organization', spdxId: creatorId, creationInfo: ci, name: product.supplier || TOOL.vendor },
+  ];
+  const root = {
+    type: 'software_Package',
+    spdxId: rootId,
+    creationInfo: ci,
+    name: product.name,
+    ...(product.version ? { software_packageVersion: product.version } : {}),
+    software_primaryPurpose: 'application',
+    ...(product.supplier ? { suppliedBy: orgId } : {}),
+  };
+  const all = [rootId, ...pkgs.map((p) => p.spdxId), ...rels.map((r) => r.spdxId)];
+  return {
+    '@context': 'https://spdx.org/rdf/3.0.1/spdx-context.jsonld',
+    '@graph': [
+      {
+        type: 'CreationInfo',
+        '@id': ci,
+        specVersion: '3.0.1',
+        created: now,
+        createdBy: [creatorId],
+        createdUsing: [toolId],
+        ...(opts.incomplete?.length ? { comment: `Incomplete${opts.unresolved ? ` (${opts.unresolved} unresolved direct dependencies)` : ''}: ${opts.incomplete.join(' | ')}` } : {}),
+      },
+      ...agents,
+      { type: 'SpdxDocument', spdxId: ns, creationInfo: ci, name, profileConformance: ['core', 'software'], rootElement: [sbomId], element: [sbomId, ...agents.map((a) => a.spdxId), ...all] },
+      { type: 'software_Sbom', spdxId: sbomId, creationInfo: ci, software_sbomType: ['build'], rootElement: [rootId], element: all },
+      root,
+      ...pkgs,
+      ...rels,
     ],
   };
 }

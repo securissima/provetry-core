@@ -8,6 +8,7 @@ import { parsePurl, fullName } from '../purl.js';
 export function readSbom(json) {
   if (json?.bomFormat === 'CycloneDX') return readCycloneDx(json);
   if (typeof json?.spdxVersion === 'string') return readSpdx(json);
+  if (isSpdx3(json)) return readSpdx3(json);
   throw new Error('not a CycloneDX or SPDX JSON document');
 }
 
@@ -56,4 +57,32 @@ function readSpdx(doc) {
   const c = /^Incomplete(?: \((\d+) unresolved direct dependencies\))?: (.*)$/s.exec(doc.creationInfo?.comment ?? '');
   const notices = c ? [{ text: c[2], missing: Number(c[1] ?? 0) }] : [];
   return { format: 'SPDX', specVersion: doc.spdxVersion, name: doc.name ?? '', version: '', components: out, notices };
+}
+
+// SPDX 3.x, JSON-LD: a graph of elements. Packages carry their package URL in software_packageUrl (or as an
+// external identifier); development dependencies are the targets of a relationship scoped "development".
+const isSpdx3 = (json) => [json?.['@context']].flat().some((c) => typeof c === 'string' && /^https:\/\/spdx\.org\/rdf\/3\./.test(c)) && Array.isArray(json['@graph']);
+const SPDX3_TO_CDX = { sha1: 'SHA-1', sha256: 'SHA-256', sha384: 'SHA-384', sha512: 'SHA-512', md5: 'MD5', sha3_256: 'SHA3-256', sha3_384: 'SHA3-384', sha3_512: 'SHA3-512', blake2b256: 'BLAKE2b-256', blake2b384: 'BLAKE2b-384', blake2b512: 'BLAKE2b-512', blake3: 'BLAKE3' };
+
+function readSpdx3(doc) {
+  const graph = doc['@graph'];
+  const kind = (e) => String(e?.type ?? e?.['@type'] ?? '').replace(/^.*[/#]/, '');
+  const dev = new Set();
+  for (const r of graph) {
+    if (kind(r) === 'LifecycleScopedRelationship' && r.scope === 'development' && r.relationshipType === 'dependsOn') for (const t of [r.to].flat()) dev.add(t);
+  }
+  const out = [];
+  for (const e of graph) {
+    if (!/^(software_)?Package$/.test(kind(e))) continue;
+    const purl = e.software_packageUrl ?? (e.externalIdentifier ?? []).find((x) => x?.externalIdentifierType === 'packageUrl')?.identifier;
+    if (!purl) continue;
+    const hashes = (e.verifiedUsing ?? []).filter((h) => SPDX3_TO_CDX[h?.algorithm] && h.hashValue).map((h) => ({ alg: SPDX3_TO_CDX[h.algorithm], content: h.hashValue }));
+    const comp = fromPurl(purl, { hashes, scope: dev.has(e.spdxId) ? 'dev' : 'required' });
+    if (comp) out.push(comp);
+  }
+  const info = graph.find((e) => kind(e) === 'CreationInfo');
+  const docEl = graph.find((e) => kind(e) === 'SpdxDocument');
+  const c = /^Incomplete(?: \((\d+) unresolved direct dependencies\))?: (.*)$/s.exec(info?.comment ?? '');
+  const notices = c ? [{ text: c[2], missing: Number(c[1] ?? 0) }] : [];
+  return { format: 'SPDX', specVersion: `SPDX-${info?.specVersion ?? '3'}`, name: docEl?.name ?? '', version: '', components: out, notices };
 }

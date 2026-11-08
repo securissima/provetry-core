@@ -7,7 +7,7 @@
 
 Since 11 September 2026, manufacturers of products with digital elements sold in the EU must report actively exploited vulnerabilities within 24 hours (Article 14 of Regulation (EU) 2024/2847). From 11 December 2027, they must also keep an SBOM and handle vulnerabilities throughout the support period (Annex I, Part II). Provetry helps with the technical side of both:
 
-- **`provetry sbom`** reads the lock files in your repository and writes a CycloneDX 1.6 or SPDX 2.3 SBOM;
+- **`provetry sbom`** reads the lock files in your repository and writes a CycloneDX 1.6, SPDX 2.3 or SPDX 3.0.1 SBOM;
 - **`provetry scan`** lists the known vulnerabilities in those components, **the ones exploited in the wild first** (CISA KEV and ENISA's EU Vulnerability Database), with the version that fixes each one, and takes your VEX statements into account;
 - **`provetry reach`** tells which vulnerable code your product really uses: for Go, function by function (with the Go team's govulncheck); for npm, PyPI, Cargo, Composer, RubyGems, NuGet and Java, package by package (is it loaded at all?), and for Rust the affected functions RustSec names, with the evidence;
 - **`provetry clock`** gives the Article 14 deadlines from the moment you became aware.
@@ -78,19 +78,20 @@ Which dependencies are direct (the ones you asked for) comes from the lock file 
 
 A lock file that cannot be read stops `provetry sbom` (an SBOM must not silently miss components) and makes `provetry scan` exit 2.
 
-Maven has no lock file: from `pom.xml`, Provetry reads the direct dependencies (the minimum the CRA asks of an SBOM), with the properties and `dependencyManagement` of the file and of its parents found in the repository, and of profiles active by default. It says what it could not resolve (versions set by a parent POM or an imported BOM outside the repository, which only Maven resolves), in the output, in the scan report (a scan with unresolved direct dependencies is incomplete) and in the SBOM itself (CycloneDX `compositions` marked `incomplete`, an SPDX comment). POMs of tests, templates and unpacked jars (`src/test`, `src/it`, `src/main/resources`, `META-INF`) are not read. With `--fail-on`, a scan with unresolved direct dependencies exits 2 (a gate does not pass on missing data, even through an SBOM written earlier, which keeps the information): for a Maven gate, pass the SBOM of the CycloneDX Maven plugin. For the full tree, add the [CycloneDX Maven plugin](https://github.com/CycloneDX/cyclonedx-maven-plugin) to the build and pass its SBOM. With Gradle, turn on [dependency locking](https://docs.gradle.org/current/userguide/dependency_locking.html): `gradle.lockfile` lists every resolved component (the older `gradle/dependency-locks/*.lockfile` too). What ships is what is in a runtime classpath; test, compile-only, annotation-processor and linter configurations, debug-only variants (when release variants exist) and the build script are development dependencies.
+Maven has no lock file: from `pom.xml`, Provetry reads the direct dependencies (the minimum the CRA asks of an SBOM), with the properties and `dependencyManagement` of the file and of its parents found in the repository, and of profiles active by default. It says what it could not resolve (versions set by a parent POM or an imported BOM outside the repository, which only Maven resolves), in the output, in the scan report (a scan with unresolved direct dependencies is incomplete) and in the SBOM itself (CycloneDX `compositions` marked `incomplete`, an SPDX comment, and an `incomplete` relationship in SPDX 3). POMs of tests, templates and unpacked jars (`src/test`, `src/it`, `src/main/resources`, `META-INF`) are not read. With `--fail-on`, a scan with unresolved direct dependencies exits 2 (a gate does not pass on missing data, even through an SBOM written earlier, which keeps the information): for a Maven gate, pass the SBOM of the CycloneDX Maven plugin. For the full tree, add the [CycloneDX Maven plugin](https://github.com/CycloneDX/cyclonedx-maven-plugin) to the build and pass its SBOM. With Gradle, turn on [dependency locking](https://docs.gradle.org/current/userguide/dependency_locking.html): `gradle.lockfile` lists every resolved component (the older `gradle/dependency-locks/*.lockfile` too). What ships is what is in a runtime classpath; test, compile-only, annotation-processor and linter configurations, debug-only variants (when release variants exist) and the build script are development dependencies.
 
-For what lock files cannot see (container images, firmware, vendored C libraries), generate an SBOM with your build tooling, for example [Syft](https://github.com/anchore/syft), and pass it to `provetry scan`: CycloneDX and SPDX JSON are both read.
+For what lock files cannot see (container images, firmware, vendored C libraries), generate an SBOM with your build tooling, for example [Syft](https://github.com/anchore/syft), and pass it to `provetry scan`: CycloneDX JSON and SPDX JSON (2.x, and 3.x in JSON-LD) are read.
 
 ## SBOM
 
 ```sh
-provetry sbom [dir] [--format cyclonedx|spdx] [--name <product>] [--version <v>] [--supplier <company>] [--out <file>]
+provetry sbom [dir] [--format cyclonedx|spdx|spdx3] [--name <product>] [--version <v>] [--supplier <company>] [--out <file>]
 ```
 
 - Each component carries its [package URL](https://github.com/package-url/purl-spec) and, when the lock file has them, its hashes.
-- The top-level dependencies of your product are listed as such in the dependency graph: the CRA asks for "at the very least the top-level dependencies" (Annex I, Part II, point 1). In CycloneDX they are the product's `dependsOn` list; in SPDX, `DEPENDS_ON` relationships from the product. When no lock file or manifest says which they are, Provetry leaves them out and tells you, rather than guessing.
-- Development dependencies are kept but marked: `scope: excluded` in CycloneDX, `DEV_DEPENDENCY_OF` in SPDX.
+- The top-level dependencies of your product are listed as such in the dependency graph: the CRA asks for "at the very least the top-level dependencies" (Annex I, Part II, point 1). In CycloneDX they are the product's `dependsOn` list; in SPDX 2.3, `DEPENDS_ON` relationships from the product; in SPDX 3.0.1, a `dependsOn` relationship. When no lock file or manifest says which they are, Provetry leaves them out and tells you, rather than guessing.
+- Development dependencies are kept but marked: `scope: excluded` in CycloneDX, `DEV_DEPENDENCY_OF` in SPDX 2.3, a `dependsOn` relationship scoped `development` in SPDX 3.0.1.
+- Which format: CycloneDX 1.6 and SPDX 3.0.1 both meet the versions Germany's BSI asks for in TR-03183-2 (2.1); SPDX 2.3 is there for the many tools that read only 2.x.
 
 The CRA does not require you to publish the SBOM: it belongs in your technical documentation, to be given to market surveillance authorities on request.
 

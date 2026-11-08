@@ -5,7 +5,7 @@ import { readFile, writeFile, stat } from 'node:fs/promises';
 import { resolve, basename, relative, join } from 'node:path';
 import { collect } from './lockfiles/index.js';
 import { readSbom } from './sbom/read.js';
-import { toCycloneDx, toSpdx } from './sbom/write.js';
+import { toCycloneDx, toSpdx, toSpdx3 } from './sbom/write.js';
 import { scan, reachesThreshold } from './scan.js';
 import { readVex, vexTemplate } from './vex.js';
 import { reportingClock } from './clock.js';
@@ -31,7 +31,7 @@ Usage
   provetry verify-journal <file> [--head <hash>] [--tsa-ca <pem>]  Check an evidence journal exported from Provetry (hash chain, timestamps)
 
 sbom options
-  --format cyclonedx|spdx   default cyclonedx
+  --format cyclonedx|spdx|spdx3   default cyclonedx (spdx: SPDX 2.3, spdx3: SPDX 3.0.1)
   --name <name>             product name (default: the directory name)
   --version <version>       product version
   --supplier <name>         your company, as it should appear in the SBOM
@@ -133,7 +133,7 @@ export async function main(argv) {
       allowPositionals: true,
       options: { format: { type: 'string', default: 'cyclonedx' }, name: { type: 'string' }, version: { type: 'string' }, supplier: { type: 'string' }, out: { type: 'string' } },
     });
-    if (!['cyclonedx', 'spdx'].includes(values.format)) fail('--format must be cyclonedx or spdx');
+    if (!['cyclonedx', 'spdx', 'spdx3'].includes(values.format)) fail('--format must be cyclonedx, spdx or spdx3');
     const dir = positionals[0] ?? '.';
     const st = await stat(resolve(dir)).catch(() => null);
     if (!st?.isDirectory()) fail(`${dir} is not a directory`);
@@ -144,7 +144,8 @@ export async function main(argv) {
     // What the files could not give (Maven's transitive tree, unresolved versions) is written in the SBOM too.
     const incomplete = notices.map((n) => n.text);
     const unresolved = notices.reduce((s, n) => s + (n.missing ?? 0), 0);
-    const doc = values.format === 'spdx' ? toSpdx(product, components, { incomplete, unresolved }) : toCycloneDx(product, components, { incomplete, unresolved });
+    const write = { spdx: toSpdx, spdx3: toSpdx3, cyclonedx: toCycloneDx }[values.format];
+    const doc = write(product, components, { incomplete, unresolved });
     await emit(JSON.stringify(doc, null, 2) + '\n', values.out);
     if (values.out) process.stderr.write(`provetry: ${components.length} components written to ${values.out}\n`);
     return;
