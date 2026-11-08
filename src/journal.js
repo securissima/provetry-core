@@ -32,3 +32,44 @@ export function verifyChain(entries) {
   }
   return null;
 }
+
+// RFC 3161 timestamps of the journal's head (the same check as the service: shared/tsa.js there).
+/** Reads a DER length at `i`: [length, offset of the content]. */
+function readLen(buf, i) {
+  const b = buf[i];
+  if (b < 0x80) return [b, i + 1];
+  const k = b & 0x7f;
+  if (k < 1 || k > 4 || i + 1 + k > buf.length) throw new Error('bad DER length');
+  let n = 0;
+  for (let j = 0; j < k; j++) n = n * 256 + buf[i + 1 + j];
+  return [n, i + 1 + k];
+}
+
+/**
+ * Checks a TimeStampResp: status granted (0) or granted with mods (1), and the digest asked for inside the
+ * token. The authority's signature itself is for `openssl ts -verify` with its certificate.
+ */
+export function checkTimeStampResponse(resp, digestHex) {
+  const buf = Buffer.from(resp);
+  if (buf[0] !== 0x30) return { ok: false, reason: 'not a timestamp response' };
+  const [, body] = readLen(buf, 1);
+  if (buf[body] !== 0x30) return { ok: false, reason: 'no status' };
+  const [, st] = readLen(buf, body + 1);
+  if (buf[st] !== 0x02) return { ok: false, reason: 'no status' };
+  const [sl, sv] = readLen(buf, st + 1);
+  const status = buf.readUIntBE(sv, Math.min(sl, 6));
+  if (status !== 0 && status !== 1) return { ok: false, reason: `refused (status ${status})` };
+  if (!buf.includes(Buffer.from(digestHex, 'hex'))) return { ok: false, reason: 'the digest is not in the token' };
+  return { ok: true };
+}
+
+/** Checks the timestamps of an export: each names an entry of the chain, and carries its hash. */
+export function verifyTimestamps(entries, timestamps = []) {
+  const bySeq = new Map(entries.map((e) => [Number(e.seq), e.hash]));
+  for (const t of timestamps) {
+    if (bySeq.get(Number(t.seq)) !== t.hash) return { seq: Number(t.seq), reason: 'the timestamped entry is not in this journal' };
+    const c = checkTimeStampResponse(Buffer.from(String(t.response), 'base64'), t.hash);
+    if (!c.ok) return { seq: Number(t.seq), reason: `timestamp: ${c.reason}` };
+  }
+  return null;
+}

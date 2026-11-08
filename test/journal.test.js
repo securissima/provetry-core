@@ -4,7 +4,7 @@ import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { canonical, entryHash, verifyChain, GENESIS } from '../src/journal.js';
+import { canonical, entryHash, verifyChain, verifyTimestamps, GENESIS } from '../src/journal.js';
 
 function chain(n) {
   const out = [];
@@ -51,4 +51,14 @@ test('CLI: verify-journal says OK or where it breaks', () => {
   try { execFileSync(process.execPath, [cli, 'verify-journal', bad], { encoding: 'utf8' }); } catch (e) { code = e.status; out = e.stdout; }
   assert.equal(code, 1);
   assert.match(out, /BROKEN at entry 2: content changed/);
+});
+
+test('timestamps: they must name an entry of the chain and carry its hash', () => {
+  const c = chain(2);
+  const der = (hex) => Buffer.concat([Buffer.from([0x30, 0x27, 0x30, 0x03, 0x02, 0x01, 0x00, 0x04, 0x20]), Buffer.from(hex, 'hex')]).toString('base64');
+  assert.equal(verifyTimestamps(c, [{ seq: 2, hash: c[1].hash, response: der(c[1].hash) }]), null);
+  assert.match(verifyTimestamps(c, [{ seq: 2, hash: c[0].hash, response: der(c[0].hash) }]).reason, /not in this journal/);
+  assert.match(verifyTimestamps(c, [{ seq: 1, hash: c[0].hash, response: der(c[1].hash) }]).reason, /digest is not in the token/);
+  const refused = Buffer.from([0x30, 0x05, 0x30, 0x03, 0x02, 0x01, 0x02]).toString('base64');
+  assert.match(verifyTimestamps(c, [{ seq: 1, hash: c[0].hash, response: refused }]).reason, /refused/);
 });

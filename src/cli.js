@@ -11,7 +11,7 @@ import { readVex, vexTemplate } from './vex.js';
 import { reportingClock } from './clock.js';
 import { reach } from './reach.js';
 import { endOfLife } from './vuln/eol.js';
-import { verifyChain } from './journal.js';
+import { verifyChain, verifyTimestamps } from './journal.js';
 import { toText, toMarkdown, toJson, toSarif, clockText } from './report.js';
 import { defaultContext } from './net.js';
 import { VERSION } from './version.js';
@@ -262,6 +262,13 @@ export async function main(argv) {
       process.exitCode = 1;
       return;
     }
+    const ts = Array.isArray(doc.timestamps) ? doc.timestamps : [];
+    const badTs = verifyTimestamps(doc.entries, ts);
+    if (badTs) {
+      process.stdout.write(`BROKEN at entry ${badTs.seq}: ${badTs.reason}.\n`);
+      process.exitCode = 1;
+      return;
+    }
     // A hash kept earlier (from a dossier, an e-mail, an earlier export) must still be in the chain:
     // otherwise the history was cut or rewritten since, even if the new chain is consistent.
     for (const h of values.head) {
@@ -273,7 +280,10 @@ export async function main(argv) {
     }
     const head = doc.entries.at(-1)?.hash ?? '(empty)';
     process.stdout.write(`OK: ${doc.entries.length} entr${doc.entries.length === 1 ? 'y' : 'ies'}, chain intact${values.head.length ? `, ${values.head.length} kept hash${values.head.length > 1 ? 'es' : ''} found` : ''}.\nLatest hash: ${head}\n`);
-    if (!values.head.length) process.stdout.write('Without a hash kept outside the service (--head), a journal rewritten from the start would also pass.\n');
+    if (ts.length) {
+      const last = ts.reduce((a, b) => (Number(b.seq) > Number(a.seq) ? b : a));
+      process.stdout.write(`${ts.length} outside timestamp${ts.length > 1 ? 's' : ''} (RFC 3161) match the chain; the latest covers entry ${last.seq} (${last.at}, ${last.tsa}).\nTo check the authority's signature: openssl ts -verify -digest ${last.hash} -in <token> -CAfile <its CA certificate>\n`);
+    } else if (!values.head.length) process.stdout.write('Without a hash kept outside the service (--head) or an outside timestamp, a journal rewritten from the start would also pass.\n');
     if (doc.head && doc.head !== head) process.stdout.write('Note: the "head" field of the file does not match its last entry.\n');
     return;
   }
