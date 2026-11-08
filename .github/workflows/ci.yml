@@ -28,3 +28,18 @@ jobs:
           node src/cli.js sbom test/fixtures/proj --name demo --out /tmp/sbom.json
           node src/cli.js sbom test/fixtures/proj --format spdx > /tmp/spdx.json
           node src/cli.js clock --since 2026-11-07T09:00:00Z
+
+  action:
+    # The GitHub Action itself, on the test fixtures (real OSV, KEV and EUVD lookups, nothing uploaded).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: provetry
+        uses: ./
+        with:
+          path: test/fixtures/proj
+          version: 0.0.0-ci
+          reachability: "off"
+      - run: test -s "${{ steps.provetry.outputs.sbom }}" && test -s "${{ steps.provetry.outputs.sarif }}"

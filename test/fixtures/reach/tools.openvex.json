@@ -1,0 +1,10 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "statements": [
+    {
+      "vulnerability": { "name": "GO-2023-2102", "aliases": ["CVE-2023-39325"] },
+      "products": [{ "@id": "Unknown Product", "subcomponents": [{ "@id": "pkg:golang/golang.org%2Fx%2Fnet@v0.15.0" }] }],
+      "status": "affected"
+    }
+  ]
+}

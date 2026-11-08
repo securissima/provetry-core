@@ -9,6 +9,7 @@ Since 11 September 2026, manufacturers of products with digital elements sold in
 
 - **`provetry sbom`** reads the lock files in your repository and writes a CycloneDX 1.6 or SPDX 2.3 SBOM;
 - **`provetry scan`** lists the known vulnerabilities in those components, **the ones exploited in the wild first** (CISA KEV and ENISA's EU Vulnerability Database), with the version that fixes each one, and takes your VEX statements into account;
+- **`provetry reach`** tells, for Go, which vulnerable functions your code really calls (with the Go team's govulncheck), and records the others as not affected, with the reason;
 - **`provetry clock`** gives the Article 14 deadlines from the moment you became aware.
 
 Free, open source, no account, no telemetry, no dependency. Node.js 22 or later.
@@ -24,6 +25,7 @@ Free, open source, no account, no telemetry, no dependency. Node.js 22 or later.
 - [SBOM](#sbom)
 - [Vulnerability scan](#vulnerability-scan)
 - [VEX: saying what does not affect you](#vex-saying-what-does-not-affect-you)
+- [Reachability: is the vulnerable code called?](#reachability-is-the-vulnerable-code-called)
 - [Article 14 reporting clock](#article-14-reporting-clock)
 - [Using it in CI](#using-it-in-ci)
 - [Privacy: which services see what](#privacy-which-services-see-what)
@@ -115,6 +117,22 @@ A vulnerable library is not always a vulnerable product: the function at fault m
 
 To start, `--vex-template vex.json` writes an OpenVEX file with one `under_investigation` statement per finding. Change each status as you assess it, and keep the file in your repository: it documents your vulnerability handling.
 
+## Reachability: is the vulnerable code called?
+
+Most vulnerabilities reported in dependencies cannot be reached from your product: the function at fault is never called. For Go, [govulncheck](https://go.dev/doc/security/vuln/) builds the call graph of your code and knows. `provetry reach` runs it in every Go module of the repository and writes one OpenVEX document:
+
+```sh
+go install golang.org/x/vuln/cmd/govulncheck@latest
+provetry reach . --product pkg:generic/gateway@2.4.0 --out reach.vex.json
+provetry scan . --vex reach.vex.json
+```
+
+- Never called: `not_affected`, justification `vulnerable_code_not_in_execute_path` (or `vulnerable_code_not_present` when the vulnerable package is not even imported), with an impact statement naming the module checked.
+- Called from any module: `affected`. Fix these first.
+- It runs where your code and your Go toolchain are; nothing is sent anywhere.
+
+Other ecosystems have no tool of that precision yet; Provetry does not guess for them.
+
 ## Article 14 reporting clock
 
 ```sh
@@ -133,16 +151,53 @@ For a severe incident (`--incident`), the final report is due one month after th
 
 ## Using it in CI
 
+### GitHub Actions
+
 ```yaml
-- uses: actions/checkout@v7
-- uses: actions/setup-node@v7
-  with:
-    node-version: 22
-- run: npx -y github:Enigmacker/provetry-core scan . --format sarif --out provetry.sarif --fail-on exploited
-- uses: github/codeql-action/upload-sarif@v4
-  if: always()
-  with:
-    sarif_file: provetry.sarif
+on:
+  push:
+    tags: ['v*']
+jobs:
+  provetry:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v5        # only for Go projects: enables reachability
+        with:
+          go-version: stable
+      - id: provetry
+        uses: Enigmacker/provetry-core@main
+        with:
+          fail-on: exploited
+          # Optional: upload each release to Provetry (API key from Settings, product id from its page).
+          api-key: ${{ secrets.PROVETRY_API_KEY }}
+          product-id: 00000000-0000-0000-0000-000000000000
+          # image: ghcr.io/acme/gateway:${{ github.ref_name }}   # describe a container image instead (Syft)
+      - uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: ${{ steps.provetry.outputs.sarif }}
+```
+
+The version is the tag (`v2.4.0` becomes `2.4.0`). The SBOM, the reachability document and the SARIF report are in the step's outputs; the Markdown report goes to the job summary.
+
+### GitLab CI
+
+```yaml
+include:
+  - remote: https://raw.githubusercontent.com/Enigmacker/provetry-core/main/ci/provetry.gitlab-ci.yml
+```
+
+Runs on every tag. Set `PROVETRY_API_KEY` and `PROVETRY_PRODUCT_ID` as CI/CD variables to upload, `PROVETRY_FAIL_ON` to fail the pipeline.
+
+### Any CI
+
+```sh
+npx -y github:Enigmacker/provetry-core sbom . --name gateway --version "$VERSION" --out sbom.cdx.json
+npx -y github:Enigmacker/provetry-core scan sbom.cdx.json --format sarif --out provetry.sarif --fail-on exploited
 ```
 
 `--fail-on exploited` fails the build (exit 1) for vulnerabilities exploited in the wild; `critical`, `high`, `medium`, `low` and `any` are stricter. A finding exploited in the wild always reaches the threshold, whatever its score. If a source could not be checked and nothing reached the threshold, the exit code is 2, not 0. SARIF paths are relative to the directory you run the command from, so run it from the repository root.

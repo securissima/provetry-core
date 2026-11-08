@@ -1,0 +1,41 @@
+# Provetry for GitLab CI: SBOM, vulnerability watch and Go reachability at every tag.
+# Include it in your .gitlab-ci.yml:
+#   include:
+#     - remote: https://raw.githubusercontent.com/Enigmacker/provetry-core/main/ci/provetry.gitlab-ci.yml
+# Variables (Settings → CI/CD → Variables): PROVETRY_API_KEY (masked, protected) and PROVETRY_PRODUCT_ID
+# to upload to Provetry; PROVETRY_FAIL_ON (exploited, critical, high…) to fail the pipeline.
+provetry:
+  stage: test
+  image: node:22-bookworm
+  rules:
+    - if: $CI_COMMIT_TAG
+  variables:
+    PROVETRY_REF: main
+    PROVETRY_FAIL_ON: none
+    PROVETRY_APP_URL: https://app.provetry.com
+  script:
+    - set -euo pipefail
+    - git clone --depth 1 --branch "$PROVETRY_REF" https://github.com/Enigmacker/provetry-core.git /tmp/provetry
+    - VERSION="${CI_COMMIT_TAG#v}"
+    - node /tmp/provetry/src/cli.js sbom . --name "$CI_PROJECT_NAME" --version "$VERSION" --out sbom.cdx.json
+    - |
+      VEX=()
+      if [ -n "$(find . -name go.mod -not -path '*/vendor/*' -print -quit)" ]; then
+        GOV=$(curl -fsS 'https://go.dev/VERSION?m=text' | head -1)
+        curl -fsSL "https://go.dev/dl/${GOV}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+        export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        node /tmp/provetry/src/cli.js reach . --product "pkg:generic/$CI_PROJECT_NAME@$VERSION" --out reach.vex.json && VEX=(--vex reach.vex.json) || true
+      fi
+      node /tmp/provetry/src/cli.js scan sbom.cdx.json "${VEX[@]}" --format markdown --out provetry.md || true
+      if [ -n "${PROVETRY_API_KEY:-}" ] && [ -n "${PROVETRY_PRODUCT_ID:-}" ]; then
+        curl -fsS -X POST -H "Authorization: Bearer $PROVETRY_API_KEY" -H 'content-type: application/json' --data-binary @sbom.cdx.json \
+          "$PROVETRY_APP_URL/api/v1/products/$PROVETRY_PRODUCT_ID/releases?version=$VERSION" || echo "upload failed or version already there"
+        [ -f reach.vex.json ] && curl -fsS -X POST -H "Authorization: Bearer $PROVETRY_API_KEY" -H 'content-type: application/json' --data-binary @reach.vex.json \
+          "$PROVETRY_APP_URL/api/v1/products/$PROVETRY_PRODUCT_ID/releases/$VERSION/vex" || true
+      fi
+      node /tmp/provetry/src/cli.js scan sbom.cdx.json "${VEX[@]}" --fail-on "$PROVETRY_FAIL_ON"
+  artifacts:
+    when: always
+    paths: [sbom.cdx.json, reach.vex.json, provetry.md]
+    expire_in: 90 days

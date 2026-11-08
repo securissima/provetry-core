@@ -1,0 +1,178 @@
+name: Provetry
+description: SBOM, vulnerability watch and Go reachability for the EU Cyber Resilience Act, at every release.
+author: Provetry
+branding:
+  icon: check-circle
+  color: purple
+
+inputs:
+  path:
+    description: Directory with your lock files (and Go modules).
+    default: "."
+  product-name:
+    description: Product name in the SBOM. Default, the repository name.
+    default: ""
+  version:
+    description: Version of this release. Default, the tag being built (v2.4.0 → 2.4.0), else the short commit.
+    default: ""
+  image:
+    description: A container image to describe instead of the lock files (generated with Syft), e.g. ghcr.io/acme/gateway:2.4.0.
+    default: ""
+  reachability:
+    description: "auto: with Go modules, run govulncheck to tell called from never-called vulnerabilities. off: skip."
+    default: auto
+  fail-on:
+    description: "Fail the job when a finding reaches: exploited, critical, high, medium, low, any, or none."
+    default: none
+  api-key:
+    description: Provetry API key (pv_…), from a secret. Without it, nothing is uploaded.
+    default: ""
+  product-id:
+    description: The product's id in Provetry (in its address, app.provetry.com/products/<id>).
+    default: ""
+  app-url:
+    description: Provetry address.
+    default: https://app.provetry.com
+
+outputs:
+  sbom:
+    description: Path of the CycloneDX SBOM.
+    value: ${{ steps.files.outputs.sbom }}
+  vex:
+    description: Path of the reachability OpenVEX document, when one was made.
+    value: ${{ steps.reach.outputs.vex }}
+  sarif:
+    description: Path of the SARIF report.
+    value: ${{ steps.files.outputs.sarif }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v7
+      with:
+        node-version: 22
+
+    # Every input reaches the shell through the environment, never pasted into the script.
+    - id: files
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_NAME: ${{ inputs.product-name }}
+      run: |
+        set -euo pipefail
+        version="$INPUT_VERSION"
+        if [ -z "$version" ]; then
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then version="${GITHUB_REF_NAME#v}"; else version="${GITHUB_SHA::12}"; fi
+        fi
+        if ! [[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._+~-]{0,63}$ ]]; then echo "::error::Provetry: '$version' is not a usable version (letters, digits and . _ + ~ -)"; exit 2; fi
+        name="${INPUT_NAME:-${GITHUB_REPOSITORY#*/}}"
+        out="$RUNNER_TEMP/provetry"
+        mkdir -p "$out"
+        {
+          echo "version=$version"
+          echo "name=$name"
+          echo "sbom=$out/sbom.cdx.json"
+          echo "sarif=$out/provetry.sarif"
+          echo "dir=$out"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: SBOM from the lock files
+      if: inputs.image == ''
+      shell: bash
+      env:
+        P_PATH: ${{ inputs.path }}
+        P_NAME: ${{ steps.files.outputs.name }}
+        P_VERSION: ${{ steps.files.outputs.version }}
+        P_OUT: ${{ steps.files.outputs.sbom }}
+      run: node "$GITHUB_ACTION_PATH/src/cli.js" sbom "$P_PATH" --name "$P_NAME" --version "$P_VERSION" --out "$P_OUT"
+
+    - name: Install Syft
+      if: inputs.image != ''
+      id: syft
+      uses: anchore/sbom-action/download-syft@v0
+
+    - name: SBOM of the container image
+      if: inputs.image != ''
+      shell: bash
+      env:
+        SYFT: ${{ steps.syft.outputs.cmd }}
+        P_IMAGE: ${{ inputs.image }}
+        P_OUT: ${{ steps.files.outputs.sbom }}
+      run: '"$SYFT" "$P_IMAGE" -o "cyclonedx-json=$P_OUT"'
+
+    - name: Reachability (Go)
+      id: reach
+      if: inputs.reachability != 'off'
+      shell: bash
+      env:
+        P_PATH: ${{ inputs.path }}
+        P_PRODUCT: pkg:generic/${{ steps.files.outputs.name }}@${{ steps.files.outputs.version }}
+        P_DIR: ${{ steps.files.outputs.dir }}
+      run: |
+        set -uo pipefail
+        if [ -z "$(find "$P_PATH" -name go.mod -not -path '*/vendor/*' -not -path '*/node_modules/*' -print -quit)" ]; then
+          echo "No Go module: reachability skipped."; exit 0
+        fi
+        if ! command -v go >/dev/null; then
+          echo "::notice::Provetry: Go modules found but no Go toolchain: add actions/setup-go before this step for reachability."; exit 0
+        fi
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        export PATH="$(go env GOPATH)/bin:$PATH"
+        if node "$GITHUB_ACTION_PATH/src/cli.js" reach "$P_PATH" --product "$P_PRODUCT" --out "$P_DIR/reach.vex.json"; then
+          echo "vex=$P_DIR/reach.vex.json" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::Provetry: govulncheck could not check every Go module; the scan goes on without reachability for them."
+          [ -s "$P_DIR/reach.vex.json" ] && echo "vex=$P_DIR/reach.vex.json" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        P_SBOM: ${{ steps.files.outputs.sbom }}
+        P_VEX: ${{ steps.reach.outputs.vex }}
+        P_SARIF: ${{ steps.files.outputs.sarif }}
+        P_FAIL: ${{ inputs.fail-on }}
+      run: |
+        set -uo pipefail
+        vex=(); [ -n "$P_VEX" ] && vex=(--vex "$P_VEX")
+        node "$GITHUB_ACTION_PATH/src/cli.js" scan "$P_SBOM" "${vex[@]}" --format markdown >> "$GITHUB_STEP_SUMMARY" || true
+        node "$GITHUB_ACTION_PATH/src/cli.js" scan "$P_SBOM" "${vex[@]}" --format sarif --out "$P_SARIF" --fail-on "$P_FAIL"
+        echo "code=$?" >> "$GITHUB_OUTPUT"
+
+    - name: Upload to Provetry
+      if: inputs.api-key != '' && inputs.product-id != ''
+      shell: bash
+      env:
+        P_KEY: ${{ inputs.api-key }}
+        P_ID: ${{ inputs.product-id }}
+        P_URL: ${{ inputs.app-url }}
+        P_VERSION: ${{ steps.files.outputs.version }}
+        P_SBOM: ${{ steps.files.outputs.sbom }}
+        P_VEX: ${{ steps.reach.outputs.vex }}
+      run: |
+        set -euo pipefail
+        if ! [[ "$P_ID" =~ ^[0-9a-f-]{36}$ ]]; then echo "::error::Provetry: product-id must be the product's id (a UUID)"; exit 2; fi
+        echo "::add-mask::$P_KEY"
+        code=$(curl -sS -o "$RUNNER_TEMP/provetry/upload.json" -w '%{http_code}' -X POST \
+          -H "Authorization: Bearer $P_KEY" -H 'content-type: application/json' --data-binary @"$P_SBOM" \
+          "$P_URL/api/v1/products/$P_ID/releases?version=$P_VERSION")
+        cat "$RUNNER_TEMP/provetry/upload.json"; echo
+        # 409: this version was already uploaded (a re-run): the evidence below still goes.
+        if [ "$code" != 201 ] && [ "$code" != 409 ]; then echo "::error::Provetry upload failed (HTTP $code)"; exit 1; fi
+        if [ -n "$P_VEX" ]; then
+          code=$(curl -sS -o "$RUNNER_TEMP/provetry/vex.json" -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $P_KEY" -H 'content-type: application/json' --data-binary @"$P_VEX" \
+            "$P_URL/api/v1/products/$P_ID/releases/$P_VERSION/vex")
+          cat "$RUNNER_TEMP/provetry/vex.json"; echo
+          [ "$code" = 200 ] || echo "::warning::Provetry: the reachability results were not accepted (HTTP $code)"
+        fi
+
+    - name: Fail on
+      if: steps.scan.outputs.code != '0' && inputs.fail-on != 'none'
+      shell: bash
+      env:
+        CODE: ${{ steps.scan.outputs.code }}
+      run: |
+        if [ "$CODE" = 1 ]; then echo "::error::Provetry: a finding reaches the fail-on threshold (see the job summary)"; else echo "::error::Provetry: the scan could not check every source"; fi
+        exit 1

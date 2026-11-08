@@ -9,6 +9,7 @@ import { toCycloneDx, toSpdx } from './sbom/write.js';
 import { scan, reachesThreshold } from './scan.js';
 import { readVex, vexTemplate } from './vex.js';
 import { reportingClock } from './clock.js';
+import { reach } from './reach.js';
 import { toText, toMarkdown, toJson, toSarif, clockText } from './report.js';
 import { defaultContext } from './net.js';
 import { VERSION } from './version.js';
@@ -18,6 +19,7 @@ const HELP = `provetry ${VERSION}: SBOM and vulnerability watch for the EU Cyber
 Usage
   provetry sbom  [dir]            Write an SBOM from the lock files found in dir (default: .)
   provetry scan  [dir|sbom.json]  List known vulnerabilities, those exploited in the wild first
+  provetry reach [dir]            Which vulnerabilities are really called by your code (Go, with govulncheck)
   provetry clock --since <date>   Article 14 reporting deadlines from the moment you became aware
 
 sbom options
@@ -37,6 +39,11 @@ scan options
   --no-euvd                 skip the ENISA EUVD lookup
   --offline                 use cached data only, make no network request
   --no-cache                neither read nor write the cache
+
+reach options
+  --out <file>              write the OpenVEX document to a file (default: standard output)
+  --product <purl>          how the document names your product (default: pkg:generic/<dir name>)
+  --govulncheck <path>      the govulncheck binary (default: govulncheck on the PATH)
 
 clock options
   --since <date>            when you became aware (ISO 8601, e.g. 2026-11-07T09:30:00Z)
@@ -168,6 +175,31 @@ export async function main(argv) {
     const gate = values['fail-on'] && values['fail-on'] !== 'none';
     if (reachesThreshold(result, values['fail-on'])) process.exitCode = 1;
     else if (!result.sources.find((s) => s.name === 'OSV.dev')?.ok || errors.length || (gate && !result.complete)) process.exitCode = 2;
+    return;
+  }
+
+  if (cmd === 'reach') {
+    const { values, positionals } = parseArgs({
+      args: rest,
+      allowPositionals: true,
+      options: { out: { type: 'string' }, product: { type: 'string' }, govulncheck: { type: 'string', default: 'govulncheck' } },
+    });
+    const dir = resolve(positionals[0] ?? '.');
+    const st = await stat(dir).catch(() => null);
+    if (!st?.isDirectory()) fail(`${positionals[0] ?? '.'} is not a directory`);
+    const product = values.product ?? `pkg:generic/${encodeURIComponent(basename(dir))}`;
+    let r;
+    try {
+      r = await reach(dir, { govulncheck: values.govulncheck, product });
+    } catch (e) {
+      fail(e.message);
+    }
+    if (!r.modules.length) fail('no go.mod found: reachability is available for Go modules (other ecosystems have no tool of that precision yet)');
+    for (const e of r.errors) process.stderr.write(`provetry: govulncheck failed in ${clean(e.module)}: ${clean(e.error)}\n`);
+    await emit(JSON.stringify(r.doc, null, 2) + '\n', values.out);
+    const n = (s) => r.doc.statements.filter((x) => x.status === s).length;
+    process.stderr.write(`provetry: ${r.modules.length} Go module${r.modules.length > 1 ? 's' : ''} checked: ${n('affected')} vulnerable function${n('affected') === 1 ? '' : 's'} called, ${n('not_affected')} not called\n`);
+    if (r.errors.length) process.exitCode = 2;
     return;
   }
 

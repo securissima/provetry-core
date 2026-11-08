@@ -6,6 +6,7 @@ export { readSbom } from './sbom/read.js';
 export { scan, reachesThreshold } from './scan.js';
 export { readVex, vexTemplate, vexFor } from './vex.js';
 export { reportingClock } from './clock.js';
+export { reach, fromGovulncheck, mergeReach, canonicalPurl } from './reach.js';
 export { toText, toMarkdown, toJson, toSarif } from './report.js';
 export { cvss3Score } from './vuln/cvss.js';
 export { memoryCache, fileCache } from './cache.js';
