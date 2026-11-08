@@ -124,3 +124,38 @@ test('Rust, function level: the affected functions RustSec names, in the project
   assert.equal(s.find((x) => x.purl === 'pkg:cargo/smallvec@1.6.0').status, 'not_affected');
   assert.match(s.find((x) => x.purl === 'pkg:cargo/memchr@2.0.0').status_notes, /src\/main\.rs:6 mentions memchr/);
 });
+
+test('Rust, function level: no conclusion where calls have no name in the source', async () => {
+  const { rustFunctions } = await import('../src/usage/rust.js');
+  const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const make = (main, extra = {}) => {
+    const dir = mkdtempSync(`${tmpdir()}/provetry-rs-`);
+    mkdirSync(`${dir}/src`);
+    writeFileSync(`${dir}/Cargo.toml`, '[package]\nname = "app"\nversion = "0.1.0"\n[dependencies]\nsv = "1"\n');
+    writeFileSync(`${dir}/Cargo.lock`, 'version = 3\n\n[[package]]\nname = "app"\nversion = "0.1.0"\ndependencies = [\n "sv",\n]\n\n[[package]]\nname = "sv"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n');
+    writeFileSync(`${dir}/src/main.rs`, main);
+    for (const [k, v] of Object.entries(extra)) writeFileSync(`${dir}/${k}`, v);
+    return dir;
+  };
+  const check = async (dir, functions) => {
+    const v = await usage(dir);
+    const f = { id: 'RUSTSEC-T', ids: ['RUSTSEC-T'], functions, component: { type: 'cargo', name: 'sv', version: '1.0.0', purl: 'pkg:cargo/sv@1.0.0' } };
+    return (await rustFunctions(dir, [f], v.components)).get('RUSTSEC-T|pkg:cargo/sv@1.0.0')?.result ?? null;
+  };
+  const plain = 'use sv::Thing;\nfn main() { let t = Thing::make(); }\n';
+  assert.equal(await check(make(plain), ['sv::Thing::insert_many']), 'not_mentioned');
+  assert.equal(await check(make(plain), ['sv::Thing::insert_many', '<sv::Thing<A> as Drop>::drop']), null, 'a trait impl: called without its name');
+  assert.equal(await check(make(plain), ['sv::Thing::index']), null, 'an operator method');
+  assert.equal(await check(make('use sv::Thing;\n#[derive(Thing)]\nstruct S;\nfn main() {}\n'), ['sv::Thing::insert_many']), null, 'a derive of the crate');
+  assert.equal(await check(make('#[sv::main]\nfn main() {}\n'), ['sv::rt::insert_many']), null, 'an attribute of the crate');
+  assert.equal(await check(make(`${plain}include!(concat!(env!("OUT_DIR"), "/gen.rs"));\n`), ['sv::Thing::insert_many']), null, 'generated code');
+  assert.equal(await check(make('use sv as other;\nfn main() { other::go!(); }\n'), ['sv::Thing::insert_many']), null, 'a macro under an alias');
+  assert.equal(await check(make(`${plain}pub use sv::Thing as T;\n`), ['sv::Thing::insert_many']), null, 'a re-export');
+});
+
+test('the note the Provetry service reads as "loaded" keeps its wording', () => {
+  const s = fromUsage([{ id: 'GHSA-2', ids: ['GHSA-2'], component: { type: 'npm', name: 'qs', purl: 'pkg:npm/qs@6.11.0' } }], u.components, { version: 't' });
+  // provetry-repo app/src/lib/suggestions.ts matches this phrase: change both together.
+  assert.match(s[0].status_notes, /import analysis of .{1,300}Whether the vulnerable function itself is called is not known/);
+});

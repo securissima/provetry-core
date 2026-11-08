@@ -122,7 +122,8 @@ export function affectedFunctions(rec, purl) {
   for (const a of rec.affected ?? []) {
     const ap = a.package ?? {};
     if (!((ap.ecosystem?.split(':')[0] === eco && ap.name === name) || (ap.purl && parsePurl(ap.purl) && fullName(parsePurl(ap.purl)) === name))) continue;
-    for (const f of a.ecosystem_specific?.affects?.functions ?? []) if (typeof f === 'string' && /^[A-Za-z_][\w:<>, ]*$/.test(f) && f.length < 300) out.add(f);
+    // Kept whole, whatever their form ("<X as Drop>::drop"): dropping one would make the list look shorter than it is.
+    for (const f of a.ecosystem_specific?.affects?.functions ?? []) if (typeof f === 'string' && f.length < 500) out.add(f);
   }
   return [...out];
 }

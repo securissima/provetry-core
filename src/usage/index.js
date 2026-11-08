@@ -184,7 +184,15 @@ export async function usage(root) {
   const components = new Map();
   const projects = [];
   const errors = [];
-  const merge = (purl, r) => { const prev = components.get(purl); if (!prev || ORDER[r.state] > ORDER[prev.state]) components.set(purl, r); };
+  const merge = (purl, r) => {
+    const prev = components.get(purl);
+    if (!prev || ORDER[r.state] > ORDER[prev.state]) components.set(purl, r);
+    else if (ORDER[r.state] === ORDER[prev.state] && r.state === 'imported') {
+      // Imported in several lock files: whatever loads it in any of them counts.
+      prev.alsoLoadedBy = [...new Set([...(prev.alsoLoadedBy ?? []), ...(r.alsoLoadedBy ?? [])])];
+      if (r.byTool) prev.byTool = true;
+    }
+  };
   for (const f of locks) {
     const rel = relative(root, f);
     let res = null;

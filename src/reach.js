@@ -212,7 +212,7 @@ export function fromUsage(findings, found, { version = TOOL.version, functions =
     } else if (functions.get(`${f.id}|${c.purl}`)?.result === 'not_mentioned') {
       const fn = functions.get(`${f.id}|${c.purl}`);
       out.push({ vulnerability, purl: c.purl, status: 'not_affected', justification: 'vulnerable_code_not_in_execute_path',
-        status_notes: `${by}: ${c.name} is used by the project's own code only (${where(u.evidence)}), and no file of the repository mentions the affected function${fn.names.length > 1 ? 's' : ''} that the advisory names (${fn.names.join(', ')}). A suggestion to check: functions of the crate that call them internally are not seen, nor calls made from another crate's code built into yours.`,
+        status_notes: `${by}: ${c.name} is used by the project's own code only (${where(u.evidence)}), and no file of the repository mentions the affected function${fn.names.length > 1 ? 's' : ''} that the advisory names (${fn.names.join(', ')}). A suggestion to check: not seen are functions of the crate that call them internally, and calls made through another crate's generic code.`,
         evidence: { state: 'not_called', functions: fn.names } });
     } else if (functions.get(`${f.id}|${c.purl}`)?.result === 'mentioned') {
       const fn = functions.get(`${f.id}|${c.purl}`);
