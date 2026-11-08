@@ -159,3 +159,36 @@ test('the note the Provetry service reads as "loaded" keeps its wording', () => 
   // provetry-repo app/src/lib/suggestions.ts matches this phrase: change both together.
   assert.match(s[0].status_notes, /import analysis of .{1,300}Whether the vulnerable function itself is called is not known/);
 });
+
+test('npm and PyPI, function level from the vulnerable-functions data', async () => {
+  const { loadFunctionData, packageFunctions } = await import('../src/usage/functions.js');
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const make = (code) => {
+    const dir = mkdtempSync(`${tmpdir()}/provetry-pvf-`);
+    writeFileSync(`${dir}/package.json`, '{"dependencies":{"flat":"5.0.0"}}');
+    writeFileSync(`${dir}/package-lock.json`, JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: { flat: '5.0.0' } }, 'node_modules/flat': { version: '5.0.0' } } }));
+    writeFileSync(`${dir}/index.js`, code);
+    return dir;
+  };
+  const records = {
+    'GHSA-2j2x-2gpw-g8fm': [{ id: 'GHSA-2j2x-2gpw-g8fm', ecosystem: 'npm', package: 'flat', entryPoints: ['unflatten'], methods: [], whole: false }],
+    'GHSA-xxxx-xxxx-xxxx': [{ id: 'GHSA-xxxx-xxxx-xxxx', ecosystem: 'npm', package: 'flat', entryPoints: ['flatten'], methods: ['Obj.run'], whole: false }],
+  };
+  const urls = [];
+  const ctx = { fetchJson: async (url) => { urls.push(url); const id = url.split('/').pop().replace('.json', ''); return records[id] ? { status: 200, json: records[id] } : { status: 404, json: null }; } };
+  const finding = (id) => ({ id, ids: [id], component: { type: 'npm', name: 'flat', version: '5.0.0', purl: 'pkg:npm/flat@5.0.0' } });
+  const findings = [finding('GHSA-2j2x-2gpw-g8fm'), finding('GHSA-xxxx-xxxx-xxxx')];
+  const data = await loadFunctionData(ctx, findings, { baseUrl: 'https://example.test/data' });
+  assert.equal(data.size, 2);
+  assert.ok(urls[0].startsWith('https://example.test/data/GHSA-'));
+  const run = async (code) => { const dir = make(code); return packageFunctions(dir, findings, (await usage(dir)).components, data); };
+  let r = await run("const flatten = require('flat');\nflatten({ a: 1 });\n");
+  assert.deepEqual(r.get('GHSA-2j2x-2gpw-g8fm|pkg:npm/flat@5.0.0').result, 'not_mentioned');
+  assert.equal(r.has('GHSA-xxxx-xxxx-xxxx|pkg:npm/flat@5.0.0'), false, 'methods lead to it: no conclusion');
+  r = await run("const { unflatten } = require('flat');\nunflatten({ 'a.b': 1 });\n");
+  assert.equal(r.get('GHSA-2j2x-2gpw-g8fm|pkg:npm/flat@5.0.0').result, 'mentioned');
+  const s = fromUsage([finding('GHSA-2j2x-2gpw-g8fm')], (await usage(make("require('flat')({})\n"))).components, { version: 't', functions: new Map([['GHSA-2j2x-2gpw-g8fm|pkg:npm/flat@5.0.0', { result: 'not_mentioned', names: ['unflatten'], source: 'data' }]]) });
+  assert.equal(s[0].status, 'not_affected');
+  assert.match(s[0].status_notes, /lead to the fixed code \(data\): unflatten/);
+});

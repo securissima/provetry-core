@@ -156,6 +156,8 @@ The dangerous mistake is to call a package unused when it is not, so every doubt
 
 **Rust, one level further.** RustSec advisories name the affected functions (`smallvec::SmallVec::insert_many`). When the project's own code is the only thing that loads the crate (no other loaded crate depends on it), uses none of its macros, and no file of the repository mentions any of those functions, the statement is `not_affected` with that evidence; when a file mentions one, the note gives the file and line to check first. No conclusion when Rust may call one of them without its name in the source: trait methods and operators (`<T as Drop>::drop`, `index`, `next`, `fmt`, `serialize`…), the crate's macros, attributes or derives used in the project, re-exports, code generated at build time (`OUT_DIR`, a `build.rs` that uses the crate). A name mentioned anywhere counts; functions of the crate that call the affected ones internally, and calls through another crate's generic code, are not seen.
 
+**npm and PyPI, one level further.** For these, advisories rarely name functions. Provetry's open data, [provetry-vulnerable-functions](https://github.com/Enigmacker/provetry-vulnerable-functions), reads the fix of each reviewed GitHub advisory and records the public functions of the package that lead to the code it changed. When the project's own code is the only thing that loads the package and no file of the repository mentions any of them, the statement is `not_affected` with that evidence; when a file mentions one, the note gives the file and line. Nothing is concluded when the record has no function-level answer, or when methods lead to the fixed code (frameworks call them without the project writing their names).
+
 What it cannot see: code that loads a package from a name built at run time, conventions of a framework that are not written in the repository. That is why, in the Provetry service, these results are suggestions with their evidence, which you accept or not; and why a CI gate does not rely on them: `--gate <file>` writes only govulncheck's statements, the ones `scan --vex` may use to pass a build (the GitHub action and the GitLab template do so).
 
 ## End of life of your components
@@ -255,6 +257,7 @@ npx -y github:Enigmacker/provetry-core scan sbom.cdx.json --format sarif --out p
 | ENISA | A download of the public list of exploited vulnerabilities. Nothing about you. |
 | FIRST | The CVE identifiers found in your components, to get their EPSS scores. |
 | endoflife.date | A download of its list of package URLs, then the names of the products found among your components (`provetry eol` only). |
+| GitHub (raw.githubusercontent.com) | The GitHub advisory identifiers found in your npm and PyPI components, to read Provetry's vulnerable-functions records (`provetry reach` only). |
 
 Your source code and lock files never leave your machine. `--no-euvd` skips ENISA, `--no-epss` skips FIRST; `--offline` sends nothing.
 

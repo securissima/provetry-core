@@ -211,13 +211,14 @@ export function fromUsage(findings, found, { version = TOOL.version, functions =
         evidence: { state: 'not_loaded', chain: u.chain } });
     } else if (functions.get(`${f.id}|${c.purl}`)?.result === 'not_mentioned') {
       const fn = functions.get(`${f.id}|${c.purl}`);
+      const which = fn.source ? `that lead to the fixed code (${fn.source})` : 'that the advisory names';
       out.push({ vulnerability, purl: c.purl, status: 'not_affected', justification: 'vulnerable_code_not_in_execute_path',
-        status_notes: `${by}: ${c.name} is used by the project's own code only (${where(u.evidence)}), and no file of the repository mentions the affected function${fn.names.length > 1 ? 's' : ''} that the advisory names (${fn.names.join(', ')}). A suggestion to check: not seen are functions of the crate that call them internally, and calls made through another crate's generic code.`,
+        status_notes: `${by}: ${c.name} is used by the project's own code only (${where(u.evidence)}), and no file of the repository mentions the function${fn.names.length > 1 ? 's' : ''} ${which}: ${fn.names.join(', ')}. A suggestion to check: not seen are calls through callbacks, dynamic property access or another package's generic code.`,
         evidence: { state: 'not_called', functions: fn.names } });
     } else if (functions.get(`${f.id}|${c.purl}`)?.result === 'mentioned') {
       const fn = functions.get(`${f.id}|${c.purl}`);
       out.push({ vulnerability, purl: c.purl, status: 'under_investigation',
-        status_notes: `${by}: ${c.name} is imported, and ${fn.file}:${fn.line} mentions ${fn.name}, an affected function the advisory names. Whether the vulnerable function itself is called is not known at this level: check this call first.`,
+        status_notes: `${by}: ${c.name} is imported, and ${fn.file}:${fn.line} mentions ${fn.name}, ${fn.source ? `a function that leads to the fixed code (${fn.source})` : 'an affected function the advisory names'}. Whether the vulnerable function itself is called is not known at this level: check this call first.`,
         evidence: { state: 'mentioned', file: fn.file, line: fn.line } });
     } else {
       const lead = u.state === 'imported' ? `${c.name} is ${u.evidence?.[0]?.how ?? 'imported'} in ${where(u.evidence)}` : `${c.name} is loaded through ${u.chain.join(' > ')} (${u.chain[0]}: ${where(u.evidence)})`;

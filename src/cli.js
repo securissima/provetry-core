@@ -12,6 +12,7 @@ import { reportingClock } from './clock.js';
 import { reach, goModules, mergeReach, fromUsage } from './reach.js';
 import { usage } from './usage/index.js';
 import { rustFunctions } from './usage/rust.js';
+import { loadFunctionData, packageFunctions } from './usage/functions.js';
 import { endOfLife } from './vuln/eol.js';
 import { verifyChain, verifyTimestamps, readCertificates, lateCoverage } from './journal.js';
 import { toText, toMarkdown, toJson, toSarif, clockText } from './report.js';
@@ -261,7 +262,9 @@ export async function main(argv) {
         const r = await scan(ctx, comps, { includeDev: true, epss: false });
         if (!r.complete) { incomplete = true; process.stderr.write('provetry: some vulnerability sources did not answer: the result may be incomplete\n'); }
         const all = [...r.findings, ...r.suppressed];
-        const statements = fromUsage(all, u.components, { functions: await rustFunctions(dir, all, u.components) });
+        const functions = await rustFunctions(dir, all, u.components);
+        for (const [k, v] of await packageFunctions(dir, all, u.components, await loadFunctionData(ctx, all))) functions.set(k, v);
+        const statements = fromUsage(all, u.components, { functions });
         lists.push(statements);
         tools.push('import analysis');
         const n = (s) => statements.filter((x) => x.status === s).length;
