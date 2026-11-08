@@ -10,8 +10,8 @@ provetry:
   rules:
     - if: $CI_COMMIT_TAG
   variables:
-    # Pinned to a commit (version 0.2.0): this code receives your API key. Move to a newer one deliberately.
-    PROVETRY_REF: b719e1017fe24fbb94ac5c05fd4a58db87a93599
+    # Pinned to a commit (version 0.4.0): this code receives your API key. Move to a newer one deliberately.
+    PROVETRY_REF: eb4cc29f8b57f33c25f3291ae440fb34c58cc34a
     PROVETRY_FAIL_ON: none
     PROVETRY_APP_URL: https://app.provetry.com
   script:
