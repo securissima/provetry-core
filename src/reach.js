@@ -126,7 +126,6 @@ export function mergeReach(lists, { product = 'pkg:generic/product', now = new D
         ...(st.justification ? { justification: st.justification } : {}),
         ...(st.status === 'not_affected' ? { impact_statement: st.status_notes } : { status_notes: st.status_notes }),
         ...(st.status === 'affected' ? { action_statement: 'Update the component to a fixed version, or stop calling the vulnerable code.' } : {}),
-        ...(st.evidence ? { 'x-provetry-evidence': st.evidence } : {}),
       })),
   };
 }
@@ -208,7 +207,7 @@ export function fromUsage(findings, found, { version = TOOL.version } = {}) {
         ? `It comes in through ${u.chain.join(' > ')}, and nothing in the project imports, names or runs ${u.chain[0]} or any package on the way.`
         : `It is in the lock file, but nothing in the project imports, names or runs it, and no package it loads depends on it.`;
       out.push({ vulnerability, purl: c.purl, status: 'not_affected', justification: 'vulnerable_code_not_in_execute_path',
-        status_notes: `${by}: ${c.name} is never loaded. ${via} Not seen: code loaded from a name read at run time (from data or the environment).`,
+        status_notes: `${by}: ${c.name} is never loaded. ${via} A suggestion to check: the analysis does not see code that loads a package from a name built at run time, conventions of a framework that are not written in the repository, or code kept outside it.`,
         evidence: { state: 'not_loaded', chain: u.chain } });
     } else {
       const lead = u.state === 'imported' ? `${c.name} is ${u.evidence?.[0]?.how ?? 'imported'} in ${where(u.evidence)}` : `${c.name} is loaded through ${u.chain.join(' > ')} (${u.chain[0]}: ${where(u.evidence)})`;

@@ -32,8 +32,9 @@ provetry:
         fi
       fi
       # A partial result is safe: what could not be checked stays "under investigation".
-      node /tmp/provetry/src/cli.js reach . --product "pkg:generic/$CI_PROJECT_NAME@$VERSION" --out reach.vex.json || true
-      [ -s reach.vex.json ] && VEX=(--vex reach.vex.json)
+      # reach.vex.json goes to Provetry (suggestions); the gate only relies on govulncheck's statements.
+      node /tmp/provetry/src/cli.js reach . --product "pkg:generic/$CI_PROJECT_NAME@$VERSION" --out reach.vex.json --gate reach.gate.vex.json || true
+      [ -s reach.gate.vex.json ] && VEX=(--vex reach.gate.vex.json)
       node /tmp/provetry/src/cli.js scan sbom.cdx.json "${VEX[@]}" --format markdown --out provetry.md || true
       if [ -n "${PROVETRY_API_KEY:-}" ] && [ -n "${PROVETRY_PRODUCT_ID:-}" ]; then
         ENC=$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$VERSION")

@@ -52,6 +52,8 @@ reach options
   --product <purl>          how the document names your product (default: pkg:generic/<dir name>)
   --govulncheck <path>      the govulncheck binary (default: govulncheck on the PATH)
   --no-imports              Go only: skip the import analysis of the other ecosystems
+  --gate <file>             also write the statements a CI gate may rely on (govulncheck's only; the
+                            import analysis suggests, it does not decide), for scan --vex
   --offline, --no-cache     as for scan (the import analysis looks the vulnerabilities up)
 
 eol options
@@ -199,7 +201,7 @@ export async function main(argv) {
     const { values, positionals } = parseArgs({
       args: rest,
       allowPositionals: true,
-      options: { out: { type: 'string' }, product: { type: 'string' }, govulncheck: { type: 'string', default: 'govulncheck' }, 'no-imports': { type: 'boolean', default: false }, offline: { type: 'boolean', default: false }, 'no-cache': { type: 'boolean', default: false } },
+      options: { out: { type: 'string' }, product: { type: 'string' }, govulncheck: { type: 'string', default: 'govulncheck' }, 'no-imports': { type: 'boolean', default: false }, gate: { type: 'string' }, offline: { type: 'boolean', default: false }, 'no-cache': { type: 'boolean', default: false } },
     });
     if (values.offline && values['no-cache']) fail('--offline needs the cache');
     const dir = resolve(positionals[0] ?? '.');
@@ -232,6 +234,7 @@ export async function main(argv) {
     if (!values['no-imports']) {
       const u = await usage(dir);
       for (const e of u.errors) process.stderr.write(`provetry: ${clean(e.file)}: ${clean(e.error)}\n`);
+      if (u.errors.length) incomplete = true;
       if (u.projects.length) {
         const comps = (await collect(dir)).components.filter((c) => c.type !== 'golang');
         const ctx = await defaultContext({ cache: !values['no-cache'] });
@@ -248,6 +251,9 @@ export async function main(argv) {
     if (!lists.length) fail('nothing to analyse: no go.mod and no lock file with a dependency graph (package-lock.json, pnpm-lock.yaml, yarn.lock, Cargo.lock, poetry.lock, uv.lock, composer.lock, Gemfile.lock, packages.lock.json, requirements.txt from pip-compile)');
     const doc = mergeReach(lists, { product, tools });
     await emit(JSON.stringify(doc, null, 2) + '\n', values.out);
+    // The statements a CI gate may rely on: govulncheck's (function level). The import analysis only
+    // suggests; its "not affected" waits for the manufacturer's decision.
+    if (values.gate) await writeFile(values.gate, JSON.stringify(mergeReach(tools.includes('govulncheck') ? [lists[0]] : [], { product, tools: tools.filter((t) => t === 'govulncheck') }), null, 2) + '\n');
     process.stderr.write(`provetry: ${summary.join('; ')}\n`);
     if (incomplete) process.exitCode = 2;
     return;

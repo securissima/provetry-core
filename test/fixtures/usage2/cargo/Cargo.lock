@@ -1,0 +1,19 @@
+version = 3
+
+[[package]]
+name = "c"
+version = "0.1.0"
+dependencies = [
+ "md-5",
+ "serde_json",
+]
+
+[[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "serde_json"
+version = "1.0.108"
+source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -123,12 +123,14 @@ runs:
             echo "::notice::Provetry: Go modules found but no Go toolchain: add actions/setup-go before this step for Go reachability."
           fi
         fi
-        if node "$GITHUB_ACTION_PATH/src/cli.js" reach "$P_PATH" --product "$P_PRODUCT" --out "$P_DIR/reach.vex.json"; then
+        if node "$GITHUB_ACTION_PATH/src/cli.js" reach "$P_PATH" --product "$P_PRODUCT" --out "$P_DIR/reach.vex.json" --gate "$P_DIR/reach.gate.vex.json"; then
           echo "vex=$P_DIR/reach.vex.json" >> "$GITHUB_OUTPUT"
+          echo "gate=$P_DIR/reach.gate.vex.json" >> "$GITHUB_OUTPUT"
         else
           # The document stays usable: what could not be checked is "under investigation", never "not affected".
           echo "::warning::Provetry: reachability could not check everything (see above); what was not checked is left under investigation."
           [ -s "$P_DIR/reach.vex.json" ] && echo "vex=$P_DIR/reach.vex.json" >> "$GITHUB_OUTPUT"
+          [ -s "$P_DIR/reach.gate.vex.json" ] && echo "gate=$P_DIR/reach.gate.vex.json" >> "$GITHUB_OUTPUT"
         fi
         exit 0
 
@@ -137,7 +139,7 @@ runs:
       shell: bash
       env:
         P_SBOM: ${{ steps.files.outputs.sbom }}
-        P_VEX: ${{ steps.reach.outputs.vex }}
+        P_VEX: ${{ steps.reach.outputs.gate }}
         P_SARIF: ${{ steps.files.outputs.sarif }}
         P_FAIL: ${{ inputs.fail-on }}
       run: |

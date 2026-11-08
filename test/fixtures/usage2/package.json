@@ -1,0 +1,1 @@
+{ "name": "x", "dependencies": { "react-dom-17": "npm:react-dom@17", "dotenv": "^16", "prisma": "^5", "sharp": "^0.33", "cli-helper": "^1", "unused-one": "^1" }, "scripts": { "start": "node -r dotenv/config index.js" } }

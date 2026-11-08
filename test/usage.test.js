@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { usage } from '../src/usage/index.js';
-import { npmPackageOf, cargoRenames } from '../src/usage/imports.js';
+import { npmPackageOf, cargoManifest } from '../src/usage/imports.js';
 import { requirementsGraph } from '../src/usage/graph.js';
 import { fromUsage, mergeReach } from '../src/reach.js';
 
@@ -13,7 +13,8 @@ test('import names: packages from specifiers, renamed crates', () => {
   assert.equal(npmPackageOf('lodash/fp'), 'lodash');
   assert.equal(npmPackageOf('@scope/pkg/sub'), '@scope/pkg');
   for (const s of ['./x', '../y', 'node:fs', 'fs', '@/lib/x', '~/a', 'https://x']) assert.equal(npmPackageOf(s), null, s);
-  assert.deepEqual([...cargoRenames('json = { package = "serde_json", version = "1" }')], [['json', 'serde_json']]);
+  assert.deepEqual([...cargoManifest('json = { package = "serde_json", version = "1" }').renames], [['json', 'serde_json']]);
+  assert.deepEqual([...cargoManifest('[dependencies.jsn]\npackage = "serde_json"\nversion = "1"\n').renames], [['jsn', 'serde_json']]);
 });
 
 test('npm: imported, loaded through a chain, named in a config, run by a script, never loaded', () => {
@@ -53,10 +54,35 @@ test('OpenVEX: never loaded becomes a "not affected" suggestion with its chain; 
   assert.equal(s.length, 2, 'nothing said when the analysis cannot tell');
   assert.equal(s[0].status, 'not_affected');
   assert.equal(s[0].justification, 'vulnerable_code_not_in_execute_path');
-  assert.match(s[0].status_notes, /left-pad > lodash.*Not seen: code loaded from a name read at run time/);
+  assert.match(s[0].status_notes, /left-pad > lodash.*A suggestion to check/);
   assert.equal(s[1].status, 'under_investigation');
-  assert.match(s[1].status_notes, /express > body-parser > qs \(express: src\/index\.ts:1\)/);
+  assert.match(s[1].status_notes, /express > body-parser > qs \(express: web\/src\/index\.ts:1\)/);
   const doc = mergeReach([s], { product: 'pkg:generic/x', tools: ['import analysis'], now: new Date('2026-11-08T00:00:00Z') });
   assert.equal(doc.statements[0].impact_statement, s[0].status_notes);
   assert.equal(doc.tooling.includes('import analysis'), false);
+});
+
+test('the cases that must never be called "never loaded"', async () => {
+  const v = await usage(new URL('./fixtures/usage2/', import.meta.url).pathname);
+  const at = (purl) => v.components.get(purl);
+  // Code in a folder with another lock file, lock file at the root: the whole repository is read.
+  assert.equal(at('pkg:pypi/pyyaml@6.0.1').state, 'imported');
+  // Also listed in a lock file that is not analysed (Pipfile.lock): no conclusion.
+  assert.equal(at('pkg:pypi/beautifulsoup4@4.12.2').state, 'unknown');
+  // A database driver chosen by Django's ENGINE setting, never imported.
+  assert.equal(at('pkg:pypi/psycopg2-binary@2.9.9').state, 'unknown');
+  // npm: an alias, "node -r dotenv/config", a tool run from the Dockerfile, an install script, code in bin/.
+  assert.equal(at('pkg:npm/react-dom@17.0.2').state, 'imported');
+  assert.equal(at('pkg:npm/dotenv@16.0.0').state, 'imported');
+  assert.equal(at('pkg:npm/prisma@5.0.0').evidence[0].file, 'Dockerfile');
+  assert.match(at('pkg:npm/sharp@0.33.0').evidence[0].how, /installed/);
+  assert.equal(at('pkg:npm/cli-helper@1.0.0').evidence[0].file, 'bin/run.js');
+  assert.equal(at('pkg:npm/unused-one@1.0.0').state, 'not_loaded');
+  // Cargo: md-5 is used as md5; a rename in table form.
+  assert.equal(at('pkg:cargo/md-5@0.10.6').state, 'imported');
+  assert.equal(at('pkg:cargo/serde_json@1.0.108').state, 'imported');
+  // Composer: Laravel package discovery, a class named in a config file without a leading backslash.
+  assert.match(at('pkg:composer/facade/ignition@2.5.1').evidence[0].how, /Laravel/);
+  assert.equal(at('pkg:composer/barryvdh/laravel-debugbar@3.9.0').state, 'imported');
+  assert.equal(at('pkg:composer/league/unused@1.0.0').state, 'not_loaded');
 });

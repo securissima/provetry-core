@@ -139,15 +139,19 @@ What it cannot see, and the document says so: calls through reflection, cgo or p
 
 ### Other ecosystems: is the vulnerable package loaded at all?
 
-For npm, PyPI, Cargo, Composer, RubyGems and NuGet, `provetry reach` reads the dependency graph in the lock files and the imports in your source files (nothing is executed), then looks the vulnerabilities up (OSV.dev; `--offline` uses the cache only):
+For npm, PyPI, Cargo, Composer, RubyGems and NuGet, `provetry reach` reads the dependency graph in the lock files and the files of the whole repository (nothing is executed), then looks the vulnerabilities up (OSV.dev; `--offline` uses the cache only):
 
-- **Never loaded**: nothing in the project imports, names or runs the package, nor any package that leads to it. `not_affected`, justification `vulnerable_code_not_in_execute_path`, with the chain that brings it in (`left-pad > lodash`) as evidence. Typical cases: a dependency nobody uses any more, a heavy optional feature of a library you do not touch, type packages.
-- **Loaded**: imported by a file of the project (file and line given), or depended on by something that is. `under_investigation`: at this level, nobody can say whether the vulnerable function itself is called.
+- **Never loaded**: nothing in the repository imports, names or runs the package, nor any package that leads to it. `not_affected`, justification `vulnerable_code_not_in_execute_path`, with the chain that brings it in (`left-pad > lodash`) as evidence. Typical cases: a dependency nobody uses any more, a heavy optional part of a library you do not touch, type packages.
+- **Loaded**: imported by a file of the repository (file and line given), or depended on by something that is. `under_investigation`: at this level, nobody can say whether the vulnerable function itself is called.
 - **Cannot tell**: nothing is said.
 
-Conservative on purpose. A package named in any of the project's own files counts as used: configurations that load plugins by name (`.babelrc`, `eslint.config.js`), style sheets (`@import`), scripts of `package.json` that run its command. Composer packages with `files` autoloading run on every request; with `Bundler.require`, every gem of the Gemfile is loaded. Python import names often differ from package names (`pyyaml` installs `yaml`): absence is only concluded when they are known, from a virtual environment in the project (`.venv`) or from a built-in list; otherwise nothing is concluded. RubyGems and NuGet give evidence of use, never of absence. A `requirements.txt` gives a graph only when made by pip-compile (its `# via` comments).
+The dangerous mistake is to call a package unused when it is not, so every doubt counts as a use:
 
-What it cannot see: code loaded from a name read at run time, from data or the environment. In the Provetry service, these results are suggestions with their evidence, which you accept or not; they never become your statement on their own.
+- A package named anywhere counts as used: in a configuration that loads plugins by name, a style sheet, a script of `package.json` (`node -r dotenv/config`), a Dockerfile, a Makefile, a Procfile, a shell script, a CI file, a Python string (`'django.db.backends.postgresql'`, `"mysql+pymysql://"`).
+- Loaded whatever the code says: npm packages with an install script; Composer packages autoloaded on every request (`files`), Composer plugins, packages registered by Laravel's package discovery; every gem of the Gemfile with `Bundler.require`.
+- No conclusion of absence when: import names are not sure (Python without a project virtual environment and outside a built-in list; packages with commands or plugin entry points; database drivers and servers started by name; Composer packages without a namespace or found at run time; every RubyGems and NuGet package); a lock file gives no complete graph (a `requirements.txt` not made by pip-compile) or cannot be analysed (`Pipfile.lock`); a file cannot be read (too many files, too large, a link outside the repository); code lives outside the repository (a linked folder, a Cargo path dependency).
+
+What it cannot see: code that loads a package from a name built at run time, conventions of a framework that are not written in the repository. That is why, in the Provetry service, these results are suggestions with their evidence, which you accept or not; and why a CI gate does not rely on them: `--gate <file>` writes only govulncheck's statements, the ones `scan --vex` may use to pass a build (the GitHub action and the GitLab template do so).
 
 ## End of life of your components
 

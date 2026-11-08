@@ -1,0 +1,1 @@
+{ "require": { "facade/ignition": "^2", "barryvdh/laravel-debugbar": "^3", "league/unused": "^1" } }
