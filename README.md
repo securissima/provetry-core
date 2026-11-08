@@ -215,7 +215,7 @@ jobs:
           go-version: stable
       - id: provetry
         # Pinned to a commit (version 0.8.0): this code receives your API key.
-        uses: Enigmacker/provetry-core@0879d73f7b259a7fbaf9cd60f48edbb1f3ff63fa
+        uses: Enigmacker/provetry-core@7e91ed835c4aa5994705d7b6de8b965782d4bff0
         with:
           fail-on: exploited
           # Optional: upload each release to Provetry (API key from Settings, product id from its page).
