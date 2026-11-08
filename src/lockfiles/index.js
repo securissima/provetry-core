@@ -50,7 +50,7 @@ export async function findLockFiles(root, maxDepth = 6) {
       const p = join(dir, e.name);
       if (e.isDirectory()) {
         if (depth < maxDepth && !SKIP_DIRS.has(e.name)) await walk(p, depth + 1);
-      } else if (e.isFile() && (PARSERS[e.name] !== undefined || (/\.lockfile$/.test(e.name) && basename(dir) === 'dependency-locks'))) {
+      } else if (e.isFile() && (Object.hasOwn(PARSERS, e.name) || (/\.lockfile$/.test(e.name) && basename(dir) === 'dependency-locks'))) {
         // pom.xml of tests, templates or unpacked jars are not the product's build.
         if (e.name === 'pom.xml' && POM_NOT_BUILD.test(relative(root, p))) continue;
         found.push(p);
@@ -68,7 +68,7 @@ export async function readLockFile(path, root = '.') {
   const text = await readFile(path, 'utf8');
   const legacyGradle = /\.lockfile$/.test(path) && basename(dirname(path)) === 'dependency-locks';
   const parse = basename(path) === 'pom.xml' ? () => parsePomFile(path)
-    : legacyGradle ? (t) => parseGradleLock(t, { configuration: basename(path, '.lockfile') }) : PARSERS[basename(path)];
+    : legacyGradle ? (t) => parseGradleLock(t, { configuration: basename(path, '.lockfile') }) : (Object.hasOwn(PARSERS, basename(path)) ? PARSERS[basename(path)] : null);
   if (!parse) throw new Error(`${path}: unknown lock file`);
   let comps;
   try {

@@ -29,9 +29,12 @@ export function parseGradleLock(text, { buildscript = false, configuration = nul
     const confs = (m[4] !== undefined ? m[4].split(',') : configuration ? [configuration] : []).map((c) => c.trim()).filter(Boolean);
     rows.push({ name: `${m[1]}:${m[2]}`, version: m[3], confs });
   }
-  const hasRelease = rows.some((r) => r.confs.some((c) => /^release/i.test(c) && RUNTIME.test(c)));
+  // Android variants, with or without product flavors: "releaseRuntimeClasspath", "freeDebugRuntimeClasspath".
+  const isRelease = (c) => /(?:^|[a-z])Release|^release/.test(c);
+  const isDebug = (c) => /(?:^|[a-z])Debug|^debug/.test(c);
+  const hasRelease = rows.some((r) => r.confs.some((c) => isRelease(c) && RUNTIME.test(c)));
   return rows.map((r) => {
-    const ships = !buildscript && r.confs.some((c) => RUNTIME.test(c) && !TEST.test(c) && !(hasRelease && /^debug/i.test(c)));
+    const ships = !buildscript && r.confs.some((c) => RUNTIME.test(c) && !TEST.test(c) && !(hasRelease && isDebug(c)));
     // No configuration known (a legacy file of unknown purpose): counted as shipped rather than left out.
     return comp(r.name, r.version, { scope: ships || (!buildscript && !r.confs.length) ? 'required' : 'dev' });
   });
@@ -64,8 +67,9 @@ export function parsePomText(text) {
   const head = without(top, ['dependencies', 'dependencyManagement', 'properties', 'modules', 'licenses', 'developers', 'contributors', 'scm', 'organization', 'issueManagement', 'ciManagement', 'mailingLists']);
   const properties = props(top);
   for (const p of active) for (const [k, v] of props(p)) properties.set(k, v);
-  const mgmt = (x) => blocks(blocks(x, 'dependencyManagement')[0] ?? '', 'dependency');
-  const deps = (x) => blocks(blocks(without(x, ['dependencyManagement']), 'dependencies')[0] ?? '', 'dependency');
+  // Plugins have dependencies of their own (build tools): never the product's.
+  const mgmt = (x) => blocks(blocks(without(x, ['build', 'reporting']), 'dependencyManagement')[0] ?? '', 'dependency');
+  const deps = (x) => blocks(blocks(without(x, ['dependencyManagement', 'build', 'reporting']), 'dependencies')[0] ?? '', 'dependency');
   const read = (d) => {
     const x = without(d, ['exclusions']);
     return { g: tag(x, 'groupId'), a: tag(x, 'artifactId'), v: tag(x, 'version'), scope: tag(x, 'scope') ?? 'compile', optional: tag(x, 'optional') === 'true', type: tag(x, 'type') };

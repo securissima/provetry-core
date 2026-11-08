@@ -190,5 +190,5 @@ runs:
       env:
         CODE: ${{ steps.scan.outputs.code }}
       run: |
-        if [ "$CODE" = 1 ]; then echo "::error::Provetry: a finding reaches the fail-on threshold (see the job summary)"; else echo "::error::Provetry: the scan could not check every source"; fi
+        if [ "$CODE" = 1 ]; then echo "::error::Provetry: a finding reaches the fail-on threshold (see the job summary)"; else echo "::error::Provetry: the scan is incomplete (a source could not be checked, or direct dependencies have no resolvable version: see the log above)"; fi
         exit 1

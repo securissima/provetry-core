@@ -109,7 +109,8 @@ async function loadComponents(target) {
     fail(`${target} is not a JSON file`);
   }
   const s = readSbom(json);
-  return { components: s.components, name: s.name || basename(abs), version: s.version, location: relative(process.cwd(), abs) || basename(abs), errors: [], unknownDirect: [], notices: [] };
+  for (const n of s.notices ?? []) process.stderr.write(`provetry: note: ${clean(n.text)}\n`);
+  return { components: s.components, name: s.name || basename(abs), version: s.version, location: relative(process.cwd(), abs) || basename(abs), errors: [], unknownDirect: [], notices: s.notices ?? [] };
 }
 
 function parseDate(s, flag) {
@@ -139,7 +140,8 @@ export async function main(argv) {
     const product = { name: values.name ?? name, version: values.version, supplier: values.supplier };
     // What the files could not give (Maven's transitive tree, unresolved versions) is written in the SBOM too.
     const incomplete = notices.map((n) => n.text);
-    const doc = values.format === 'spdx' ? toSpdx(product, components, { incomplete }) : toCycloneDx(product, components, { incomplete });
+    const unresolved = notices.reduce((s, n) => s + (n.missing ?? 0), 0);
+    const doc = values.format === 'spdx' ? toSpdx(product, components, { incomplete, unresolved }) : toCycloneDx(product, components, { incomplete, unresolved });
     await emit(JSON.stringify(doc, null, 2) + '\n', values.out);
     if (values.out) process.stderr.write(`provetry: ${components.length} components written to ${values.out}\n`);
     return;
@@ -203,7 +205,10 @@ export async function main(argv) {
     // A gate must not pass on missing data: incomplete results exit 2, unless a finding already fails the gate.
     const gate = values['fail-on'] && values['fail-on'] !== 'none';
     if (reachesThreshold(result, values['fail-on'])) process.exitCode = 1;
-    else if (!result.sources.find((s) => s.name === 'OSV.dev')?.ok || errors.length || (gate && !result.complete)) process.exitCode = 2;
+    else if (!result.sources.find((s) => s.name === 'OSV.dev')?.ok || errors.length || (gate && !result.complete)) {
+      process.exitCode = 2;
+      if (gate && notices.some((n) => n.missing)) process.stderr.write('provetry: direct Maven dependencies have no version Provetry can resolve, so the gate cannot pass on this data: pass an SBOM from the CycloneDX Maven plugin (complete tree), or run without --fail-on\n');
+    }
     return;
   }
 

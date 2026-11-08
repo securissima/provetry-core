@@ -32,7 +32,13 @@ function readCycloneDx(bom) {
   };
   walk(bom.components);
   const meta = bom.metadata?.component ?? {};
-  return { format: 'CycloneDX', specVersion: bom.specVersion ?? '', name: meta.name ?? '', version: meta.version ?? '', components: out };
+  // An SBOM that says it is incomplete stays incomplete for the scan (Provetry's own notes, or any tool's compositions).
+  const props = bom.metadata?.properties ?? [];
+  const missing = Number(props.find((p) => p?.name === 'provetry:unresolved')?.value ?? 0) || 0;
+  const notes = props.filter((p) => p?.name === 'provetry:incomplete' && typeof p.value === 'string').map((p) => p.value);
+  if (!notes.length && (bom.compositions ?? []).some((c) => /^incomplete/.test(c?.aggregate ?? ''))) notes.push('the SBOM says its inventory is incomplete');
+  const notices = notes.map((text, i) => ({ text, missing: i === 0 ? missing : 0 }));
+  return { format: 'CycloneDX', specVersion: bom.specVersion ?? '', name: meta.name ?? '', version: meta.version ?? '', components: out, notices };
 }
 
 const SPDX_TO_CDX = { SHA1: 'SHA-1', SHA256: 'SHA-256', SHA384: 'SHA-384', SHA512: 'SHA-512', MD5: 'MD5', 'SHA3-256': 'SHA3-256', 'SHA3-384': 'SHA3-384', 'SHA3-512': 'SHA3-512', 'BLAKE2b-256': 'BLAKE2b-256', 'BLAKE2b-384': 'BLAKE2b-384', 'BLAKE2b-512': 'BLAKE2b-512', BLAKE3: 'BLAKE3' };
@@ -47,5 +53,7 @@ function readSpdx(doc) {
     const comp = fromPurl(ref.referenceLocator, { hashes, scope: dev.has(p.SPDXID) ? 'dev' : 'required' });
     if (comp) out.push(comp);
   }
-  return { format: 'SPDX', specVersion: doc.spdxVersion, name: doc.name ?? '', version: '', components: out };
+  const c = /^Incomplete(?: \((\d+) unresolved direct dependencies\))?: (.*)$/s.exec(doc.creationInfo?.comment ?? '');
+  const notices = c ? [{ text: c[2], missing: Number(c[1] ?? 0) }] : [];
+  return { format: 'SPDX', specVersion: doc.spdxVersion, name: doc.name ?? '', version: '', components: out, notices };
 }

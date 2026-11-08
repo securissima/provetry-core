@@ -53,3 +53,22 @@ test('Java in the import analysis: evidence of use, never a conclusion of absenc
   assert.equal(u.components.get('pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.13.0').state, 'unknown');
   assert.equal([...u.components.values()].some((x) => x.state === 'not_loaded'), false);
 });
+
+test('incompleteness survives the SBOM: written, then read back by scan', async () => {
+  const { toCycloneDx, toSpdx } = await import('../src/sbom/write.js');
+  const { readSbom } = await import('../src/sbom/read.js');
+  const cdx = toCycloneDx({ name: 'p' }, [], { incomplete: ['x lists the direct dependencies only'], unresolved: 2 });
+  assert.deepEqual(readSbom(cdx).notices, [{ text: 'x lists the direct dependencies only', missing: 2 }]);
+  const spdx = toSpdx({ name: 'p' }, [], { incomplete: ['y'], unresolved: 1 });
+  assert.deepEqual(readSbom(spdx).notices, [{ text: 'y', missing: 1 }]);
+  assert.deepEqual(readSbom(toCycloneDx({ name: 'p' }, [])).notices, []);
+});
+
+test('profiles: plugin dependencies are not the product; Android flavors', () => {
+  const p = parsePomText(`<project><groupId>g</groupId><version>1</version><profiles><profile><activation><activeByDefault>true</activeByDefault></activation>
+    <build><plugins><plugin><dependencies><dependency><groupId>org.ow2.asm</groupId><artifactId>asm</artifactId><version>9.0</version></dependency></dependencies></plugin></plugins></build>
+    <dependencies><dependency><groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId><version>2.14.1</version></dependency></dependencies></profile></profiles></project>`);
+  assert.deepEqual(p.dependencies.map((d) => d.a), ['log4j-core']);
+  const g = parseGradleLock('a:b:1=freeDebugRuntimeClasspath\nc:d:1=freeReleaseRuntimeClasspath');
+  assert.deepEqual(g.map((x) => x.scope), ['dev', 'required']);
+});
