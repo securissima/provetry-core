@@ -30,6 +30,9 @@ inputs:
   product-id:
     description: The product's id in Provetry (in its address, app.provetry.com/products/<id>).
     default: ""
+  upload:
+    description: "When to upload: tags (each tagged release, the default) or always (every run, named after the commit)."
+    default: tags
   app-url:
     description: Provetry address.
     default: https://app.provetry.com
@@ -100,9 +103,10 @@ runs:
         P_OUT: ${{ steps.files.outputs.sbom }}
       run: '"$SYFT" "$P_IMAGE" -o "cyclonedx-json=$P_OUT"'
 
+    # Reachability reads the source; it says nothing about the other binaries an image may contain.
     - name: Reachability (Go)
       id: reach
-      if: inputs.reachability != 'off'
+      if: inputs.reachability != 'off' && inputs.image == ''
       shell: bash
       env:
         P_PATH: ${{ inputs.path }}
@@ -121,7 +125,8 @@ runs:
         if node "$GITHUB_ACTION_PATH/src/cli.js" reach "$P_PATH" --product "$P_PRODUCT" --out "$P_DIR/reach.vex.json"; then
           echo "vex=$P_DIR/reach.vex.json" >> "$GITHUB_OUTPUT"
         else
-          echo "::warning::Provetry: govulncheck could not check every Go module; the scan goes on without reachability for them."
+          # The document stays usable: whatever a failed module depends on is "under investigation", never "not affected".
+          echo "::warning::Provetry: govulncheck could not check every Go module (see above); their dependencies are left under investigation."
           [ -s "$P_DIR/reach.vex.json" ] && echo "vex=$P_DIR/reach.vex.json" >> "$GITHUB_OUTPUT"
         fi
 
@@ -141,7 +146,7 @@ runs:
         echo "code=$?" >> "$GITHUB_OUTPUT"
 
     - name: Upload to Provetry
-      if: inputs.api-key != '' && inputs.product-id != ''
+      if: inputs.api-key != '' && inputs.product-id != '' && (inputs.upload == 'always' || github.ref_type == 'tag')
       shell: bash
       env:
         P_KEY: ${{ inputs.api-key }}
@@ -154,18 +159,22 @@ runs:
         set -euo pipefail
         if ! [[ "$P_ID" =~ ^[0-9a-f-]{36}$ ]]; then echo "::error::Provetry: product-id must be the product's id (a UUID)"; exit 2; fi
         echo "::add-mask::$P_KEY"
+        enc=$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$P_VERSION")
         code=$(curl -sS -o "$RUNNER_TEMP/provetry/upload.json" -w '%{http_code}' -X POST \
           -H "Authorization: Bearer $P_KEY" -H 'content-type: application/json' --data-binary @"$P_SBOM" \
-          "$P_URL/api/v1/products/$P_ID/releases?version=$P_VERSION")
+          "$P_URL/api/v1/products/$P_ID/releases?version=$enc") || { echo "::error::Provetry could not be reached"; exit 1; }
         cat "$RUNNER_TEMP/provetry/upload.json"; echo
-        # 409: this version was already uploaded (a re-run): the evidence below still goes.
-        if [ "$code" != 201 ] && [ "$code" != 409 ]; then echo "::error::Provetry upload failed (HTTP $code)"; exit 1; fi
+        # A re-run of the same tag finds its release already there: fine, the evidence below still goes.
+        # Any other refusal (archived product, plan limit…) fails the job.
+        if [ "$code" != 201 ] && ! { [ "$code" = 409 ] && grep -q 'already exists' "$RUNNER_TEMP/provetry/upload.json"; }; then
+          echo "::error::Provetry upload refused (HTTP $code)"; exit 1
+        fi
         if [ -n "$P_VEX" ]; then
           code=$(curl -sS -o "$RUNNER_TEMP/provetry/vex.json" -w '%{http_code}' -X POST \
             -H "Authorization: Bearer $P_KEY" -H 'content-type: application/json' --data-binary @"$P_VEX" \
-            "$P_URL/api/v1/products/$P_ID/releases/$P_VERSION/vex")
-          cat "$RUNNER_TEMP/provetry/vex.json"; echo
-          [ "$code" = 200 ] || echo "::warning::Provetry: the reachability results were not accepted (HTTP $code)"
+            "$P_URL/api/v1/products/$P_ID/releases/$enc/vex") || code=000
+          cat "$RUNNER_TEMP/provetry/vex.json" 2>/dev/null; echo
+          [ "$code" = 200 ] || { echo "::error::Provetry: the reachability results were refused (HTTP $code)"; exit 1; }
         fi
 
     - name: Fail on

@@ -12,16 +12,22 @@
 //
 // Other ecosystems have no tool of that precision yet; they are not guessed at.
 import { spawn } from 'node:child_process';
-import { dirname, relative, resolve } from 'node:path';
-import { findLockFiles } from './lockfiles/index.js';
+import { dirname, join, relative, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { findLockFiles, parseGoMod } from './lockfiles/index.js';
 import { makePurl, parsePurl, fullName } from './purl.js';
 import { TOOL } from './version.js';
 
 const RANK = { affected: 3, under_investigation: 2, not_affected: 1, fixed: 0 };
 
-/** Directories of the Go modules under root (each with a go.mod), skipping vendored and hidden folders. */
+/**
+ * Directories of the Go modules under root (each with a go.mod), skipping vendored and hidden folders, and
+ * testdata (Go's own convention for fixtures that are not part of the product).
+ */
 export async function goModules(root) {
-  return (await findLockFiles(root)).filter((f) => f.endsWith('/go.mod') || f === 'go.mod').map((f) => dirname(resolve(root, f)));
+  return (await findLockFiles(root))
+    .filter((f) => (f.endsWith('/go.mod') || f === 'go.mod') && !/(^|\/)testdata\//.test(f))
+    .map((f) => dirname(resolve(root, f)));
 }
 
 /** Runs a command and returns { code, stdout, stderr }; never throws for a non-zero exit. */
@@ -65,7 +71,10 @@ export function fromGovulncheck(doc, { module = '.', version = '' } = {}) {
   for (const s of doc?.statements ?? []) {
     const name = s.vulnerability?.name;
     if (!name || !s.status) continue;
-    const subs = (s.products ?? []).flatMap((p) => p.subcomponents ?? []).map((c) => c['@id']).filter((id) => typeof id === 'string' && id.startsWith('pkg:'));
+    // The standard library is the one of the Go that ran govulncheck, not necessarily the one that builds
+    // the product: its answer would be about another version, so it is left out.
+    const subs = (s.products ?? []).flatMap((p) => p.subcomponents ?? []).map((c) => c['@id'])
+      .filter((id) => typeof id === 'string' && id.startsWith('pkg:') && !/^pkg:golang\/stdlib@/.test(id));
     for (const purl of subs) {
       out.push({
         vulnerability: { name, ...(s.vulnerability.aliases?.length ? { aliases: s.vulnerability.aliases } : {}) },
@@ -74,7 +83,7 @@ export function fromGovulncheck(doc, { module = '.', version = '' } = {}) {
         ...(s.justification ? { justification: s.justification } : {}),
         status_notes:
           s.status === 'not_affected'
-            ? `govulncheck${version ? ` ${version}` : ''} found no call to the vulnerable code from the module in ${module}${s.justification === 'vulnerable_code_not_present' ? ' (the vulnerable package is not even imported)' : ''}.`
+            ? `govulncheck${version ? ` ${version}` : ''} found no call to the vulnerable code from the module in ${module}${s.justification === 'vulnerable_code_not_present' ? ' (the vulnerable package is not even imported)' : ''}, for the platform and build tags it ran with (calls through reflection, cgo or plugins are not seen).`
             : `govulncheck${version ? ` ${version}` : ''} found a call path to the vulnerable code from the module in ${module}.`,
       });
     }
@@ -149,6 +158,28 @@ export async function reach(root, { govulncheck = 'govulncheck', product, exec =
     }
     lists.push(fromGovulncheck(doc, { module: label, version: version ? `v${version}` : '' }));
   }
-  return { doc: mergeReach(lists, { product, now }), modules: modules.map((d) => relative(resolve(root), d) || '.'), errors };
+  const merged = mergeReach(lists, { product, now });
+  // A module that could not be checked may call what the others do not: nothing it depends on is
+  // declared "not affected", only "under investigation".
+  if (errors.length) {
+    const unchecked = new Set();
+    for (const e of errors) {
+      try {
+        for (const c of parseGoMod(await readFile(join(resolve(root), e.module, 'go.mod'), 'utf8'))) unchecked.add(c.purl);
+      } catch {
+        // Unreadable go.mod: nothing more to protect than what failed.
+      }
+    }
+    for (const st of merged.statements) {
+      const purl = st.products[0].subcomponents[0]['@id'];
+      if (st.status === 'not_affected' && unchecked.has(purl)) {
+        st.status = 'under_investigation';
+        st.status_notes = `${st.impact_statement} Not concluded: another module that depends on it could not be checked.`;
+        delete st.justification;
+        delete st.impact_statement;
+      }
+    }
+  }
+  return { doc: merged, modules: modules.map((d) => relative(resolve(root), d) || '.'), errors };
 }
 

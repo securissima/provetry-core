@@ -130,6 +130,9 @@ provetry scan . --vex reach.vex.json
 - Never called: `not_affected`, justification `vulnerable_code_not_in_execute_path` (or `vulnerable_code_not_present` when the vulnerable package is not even imported), with an impact statement naming the module checked.
 - Called from any module: `affected`. Fix these first.
 - It runs where your code and your Go toolchain are; nothing is sent anywhere.
+- If govulncheck fails in one module, nothing that module depends on is declared not affected: it stays `under_investigation`.
+
+What it cannot see, and the document says so: calls through reflection, cgo or plugins, and code built only for other platforms or build tags than the ones it ran with. The Go standard library is left out (govulncheck checks the Go that runs it, not necessarily the one that builds your product). Reachability is about your source code: when you describe a container image, other binaries in it are not covered.
 
 Other ecosystems have no tool of that precision yet; Provetry does not guess for them.
 
@@ -169,7 +172,7 @@ jobs:
         with:
           go-version: stable
       - id: provetry
-        uses: Enigmacker/provetry-core@main
+        uses: Enigmacker/provetry-core@v0.2.0   # pin a release: this code receives your API key
         with:
           fail-on: exploited
           # Optional: upload each release to Provetry (API key from Settings, product id from its page).
@@ -182,7 +185,7 @@ jobs:
           sarif_file: ${{ steps.provetry.outputs.sarif }}
 ```
 
-The version is the tag (`v2.4.0` becomes `2.4.0`). The SBOM, the reachability document and the SARIF report are in the step's outputs; the Markdown report goes to the job summary.
+The version is the tag (`v2.4.0` becomes `2.4.0`). Uploads happen on tags only (`upload: always` to upload every run). A re-run of the same tag is fine; any other refusal fails the job. The SBOM, the reachability document and the SARIF report are in the step's outputs; the Markdown report goes to the job summary. With `image:`, reachability is skipped (it reads source code, not images).
 
 ### GitLab CI
 

@@ -55,10 +55,18 @@ test('the document is valid OpenVEX that `scan --vex` applies to the right compo
   assert.match(r.doc.statements.find((s) => s.vulnerability.name === 'GO-2023-2102').impact_statement, /no call/);
 });
 
-test('a module where govulncheck fails is reported, the others still answer', async () => {
+test('a module where govulncheck fails is reported; what it depends on is not declared "not affected"', async () => {
   const r = await reach(root, { now, exec: fakeExec({ svc: { code: 0, stdout: fixture('svc.openvex.json'), stderr: '' } }) });
   assert.deepEqual(r.errors, [{ module: 'tools', error: 'go: cannot find main module' }]);
-  assert.equal(r.doc.statements.length, 2);
+  const net = r.doc.statements.find((s) => s.vulnerability.name === 'GO-2023-2102');
+  assert.equal(net.status, 'under_investigation', 'tools requires golang.org/x/net and was not checked');
+  assert.match(net.status_notes, /could not be checked/);
+  assert.equal(net.justification, undefined);
+});
+
+test('the standard library and testdata modules are left out', () => {
+  const doc = { statements: [{ vulnerability: { name: 'GO-1' }, products: [{ subcomponents: [{ '@id': 'pkg:golang/stdlib@v1.25.0' }] }], status: 'not_affected', justification: 'vulnerable_code_not_present' }] };
+  assert.deepEqual(fromGovulncheck(doc), []);
 });
 
 test('without govulncheck: a clear message', async () => {
