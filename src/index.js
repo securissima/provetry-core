@@ -8,6 +8,7 @@ export { readVex, vexTemplate, vexFor } from './vex.js';
 export { reportingClock } from './clock.js';
 export { reach, fromGovulncheck, mergeReach, canonicalPurl, fromUsage } from './reach.js';
 export { usage, analyseProject } from './usage/index.js';
+export { rustFunctions, functionName } from './usage/rust.js';
 export { toText, toMarkdown, toJson, toSarif } from './report.js';
 export { cvss3Score } from './vuln/cvss.js';
 export { loadEpss, epssOf, EPSS_LIKELY } from './vuln/epss.js';

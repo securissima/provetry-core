@@ -11,6 +11,7 @@ import { readVex, vexTemplate } from './vex.js';
 import { reportingClock } from './clock.js';
 import { reach, goModules, mergeReach, fromUsage } from './reach.js';
 import { usage } from './usage/index.js';
+import { rustFunctions } from './usage/rust.js';
 import { endOfLife } from './vuln/eol.js';
 import { verifyChain, verifyTimestamps, readCertificates, lateCoverage } from './journal.js';
 import { toText, toMarkdown, toJson, toSarif, clockText } from './report.js';
@@ -243,7 +244,8 @@ export async function main(argv) {
         ctx.offline = values.offline;
         const r = await scan(ctx, comps, { includeDev: true, epss: false });
         if (!r.complete) { incomplete = true; process.stderr.write('provetry: some vulnerability sources did not answer: the result may be incomplete\n'); }
-        const statements = fromUsage([...r.findings, ...r.suppressed], u.components);
+        const all = [...r.findings, ...r.suppressed];
+        const statements = fromUsage(all, u.components, { functions: await rustFunctions(dir, all, u.components) });
         lists.push(statements);
         tools.push('import analysis');
         const n = (s) => statements.filter((x) => x.status === s).length;

@@ -9,7 +9,7 @@ Since 11 September 2026, manufacturers of products with digital elements sold in
 
 - **`provetry sbom`** reads the lock files in your repository and writes a CycloneDX 1.6 or SPDX 2.3 SBOM;
 - **`provetry scan`** lists the known vulnerabilities in those components, **the ones exploited in the wild first** (CISA KEV and ENISA's EU Vulnerability Database), with the version that fixes each one, and takes your VEX statements into account;
-- **`provetry reach`** tells which vulnerable code your product really uses: for Go, function by function (with the Go team's govulncheck); for npm, PyPI, Cargo, Composer, RubyGems and NuGet, package by package (is it loaded at all?), with the evidence;
+- **`provetry reach`** tells which vulnerable code your product really uses: for Go, function by function (with the Go team's govulncheck); for npm, PyPI, Cargo, Composer, RubyGems and NuGet, package by package (is it loaded at all?), and for Rust the affected functions RustSec names, with the evidence;
 - **`provetry clock`** gives the Article 14 deadlines from the moment you became aware.
 
 Free, open source, no account, no telemetry, no dependency. Node.js 22 or later.
@@ -150,6 +150,8 @@ The dangerous mistake is to call a package unused when it is not, so every doubt
 - A package named anywhere counts as used: in a configuration that loads plugins by name, a style sheet, a script of `package.json` (`node -r dotenv/config`), a Dockerfile, a Makefile, a Procfile, a shell script, a CI file, a Python string (`'django.db.backends.postgresql'`, `"mysql+pymysql://"`).
 - Loaded whatever the code says: npm packages with an install script (seen in `package-lock.json` and pnpm lock files that record it; yarn.lock does not); Composer packages autoloaded on every request (`files`), Composer plugins, packages registered by Laravel's package discovery; every gem of the Gemfile with `Bundler.require`.
 - No conclusion of absence when: import names are not sure (Python without a project virtual environment and outside a built-in list; packages with commands or plugin entry points; database drivers and servers started by name; Composer packages without a namespace or found at run time; every RubyGems and NuGet package); a lock file gives no complete graph (a `requirements.txt` not made by pip-compile) or cannot be analysed (`Pipfile.lock`); a file cannot be read (too many files, too large, a link outside the repository); code lives outside the repository (a linked folder, a Cargo path dependency).
+
+**Rust, one level further.** RustSec advisories name the affected functions (`smallvec::SmallVec::insert_many`). When the project's own code is the only thing that loads the crate (no other loaded crate depends on it), uses none of its macros, and no file of the repository mentions any of those functions, the statement is `not_affected` with that evidence; when a file mentions one, the note gives the file and line to check first. A name mentioned anywhere counts, and functions of the crate that call the affected ones internally are not seen.
 
 What it cannot see: code that loads a package from a name built at run time, conventions of a framework that are not written in the repository. That is why, in the Provetry service, these results are suggestions with their evidence, which you accept or not; and why a CI gate does not rely on them: `--gate <file>` writes only govulncheck's statements, the ones `scan --vex` may use to pass a build (the GitHub action and the GitLab template do so).
 

@@ -109,6 +109,24 @@ export function fixedVersions(rec, purl) {
   return [...fixed];
 }
 
+/**
+ * The functions a record names as affected for a component, when its database gives them: RustSec
+ * (`ecosystem_specific.affects.functions`, full paths such as "smallvec::SmallVec::insert_many").
+ */
+export function affectedFunctions(rec, purl) {
+  const p = parsePurl(purl);
+  if (!p) return [];
+  const eco = OSV_ECOSYSTEM[p.type];
+  const name = fullName(p);
+  const out = new Set();
+  for (const a of rec.affected ?? []) {
+    const ap = a.package ?? {};
+    if (!((ap.ecosystem?.split(':')[0] === eco && ap.name === name) || (ap.purl && parsePurl(ap.purl) && fullName(parsePurl(ap.purl)) === name))) continue;
+    for (const f of a.ecosystem_specific?.affects?.functions ?? []) if (typeof f === 'string' && /^[A-Za-z_][\w:<>, ]*$/.test(f) && f.length < 300) out.add(f);
+  }
+  return [...out];
+}
+
 /** All identifiers of a record (its own id and its aliases), CVE first. */
 export function idsOf(rec) {
   const ids = [...new Set([rec.id, ...(rec.aliases ?? [])])];

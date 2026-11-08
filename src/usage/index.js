@@ -151,9 +151,17 @@ export async function analyseProject(lockPath, root, repo) {
   const why = repo.incomplete ?? (big.length ? `${big.length} source file${big.length > 1 ? 's' : ''} too large to read (${big[0]})` : null) ?? blocked
     ?? (!g.complete ? 'the lock file does not give every dependency link' : null);
   const out = new Map();
+  // Who else loads a component the code imports: packages that are themselves loaded (or may be) and
+  // depend on it. A function-level check of the project's own code says nothing when others call it too.
+  const reverse = new Map();
+  for (const [from, tos] of g.edges) for (const to of tos) (reverse.get(to) ?? reverse.set(to, []).get(to)).push(from);
+  const mayRun = (k) => fromUsed.has(k) || fromUnsure.has(k) || fromExternal.has(k);
   for (const purl of g.nodes.keys()) {
     const u = use.get(purl);
-    if (u?.used) out.set(purl, { state: 'imported', evidence: u.evidence, project });
+    if (u?.used) {
+      const others = (reverse.get(purl) ?? []).filter(mayRun);
+      out.set(purl, { state: 'imported', evidence: u.evidence, project, ...(why ? { alsoLoadedBy: ['(not known)'] } : { alsoLoadedBy: namesOf(g, others) }), ecosystem: g.ecosystem, ...(g.used.has(purl) ? { byTool: true } : {}) });
+    }
     else if (fromUsed.has(purl)) {
       const c = chainOf(fromUsed, purl);
       out.set(purl, { state: 'loaded', chain: namesOf(g, c), evidence: use.get(c[0])?.evidence ?? [], project });

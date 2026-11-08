@@ -102,3 +102,25 @@ test('large files are read in linear time', async () => {
   assert.ok(Date.now() - t < 15000, `took ${Date.now() - t} ms`);
   assert.equal(r.components.get('pkg:npm/a@1.0.0').state, 'not_loaded');
 });
+
+test('Rust, function level: the affected functions RustSec names, in the project\'s own code', async () => {
+  const { rustFunctions, functionName } = await import('../src/usage/rust.js');
+  assert.equal(functionName('smallvec::SmallVec::<A>::insert_many'), 'insert_many');
+  const dir = new URL('./fixtures/usage3/', import.meta.url).pathname;
+  const v = await usage(dir);
+  const f = (name, version, id, functions) => ({ id, ids: [id], functions, component: { type: 'cargo', name, version, purl: `pkg:cargo/${name}@${version}` } });
+  const findings = [
+    f('smallvec', '1.6.0', 'RUSTSEC-2021-0003', ['smallvec::SmallVec::insert_many']),
+    f('memchr', '2.0.0', 'RUSTSEC-X-1', ['memchr::memchr']),
+    f('bytes', '1.0.0', 'RUSTSEC-X-2', ['bytes::Bytes::slice_ref']),
+    f('lazy_static', '1.4.0', 'RUSTSEC-X-3', ['lazy_static::lazy::Lazy::get']),
+  ];
+  const r = await rustFunctions(dir, findings, v.components);
+  assert.deepEqual(r.get('RUSTSEC-2021-0003|pkg:cargo/smallvec@1.6.0'), { result: 'not_mentioned', names: ['insert_many'] });
+  assert.equal(r.get('RUSTSEC-X-1|pkg:cargo/memchr@2.0.0').result, 'mentioned');
+  assert.equal(r.has('RUSTSEC-X-2|pkg:cargo/bytes@1.0.0'), false, 'also loaded by hyper: its calls are not seen');
+  assert.equal(r.has('RUSTSEC-X-3|pkg:cargo/lazy_static@1.4.0'), false, 'its macros expand in the code');
+  const s = fromUsage(findings, v.components, { version: 't', functions: r });
+  assert.equal(s.find((x) => x.purl === 'pkg:cargo/smallvec@1.6.0').status, 'not_affected');
+  assert.match(s.find((x) => x.purl === 'pkg:cargo/memchr@2.0.0').status_notes, /src\/main\.rs:6 mentions memchr/);
+});

@@ -193,7 +193,7 @@ const where = (ev = []) => ev.slice(0, 3).map((e) => `${e.file}:${e.line}`).join
  * Statements from the import analysis (usage()) for the findings of a scan: one per vulnerability and
  * component, Go modules left to govulncheck. `found` is usage().components.
  */
-export function fromUsage(findings, found, { version = TOOL.version } = {}) {
+export function fromUsage(findings, found, { version = TOOL.version, functions = new Map() } = {}) {
   const out = [];
   for (const f of findings) {
     const c = f.component;
@@ -209,6 +209,16 @@ export function fromUsage(findings, found, { version = TOOL.version } = {}) {
       out.push({ vulnerability, purl: c.purl, status: 'not_affected', justification: 'vulnerable_code_not_in_execute_path',
         status_notes: `${by}: ${c.name} is never loaded. ${via} A suggestion to check: the analysis does not see code that loads a package from a name built at run time, conventions of a framework that are not written in the repository, or code kept outside it.`,
         evidence: { state: 'not_loaded', chain: u.chain } });
+    } else if (functions.get(`${f.id}|${c.purl}`)?.result === 'not_mentioned') {
+      const fn = functions.get(`${f.id}|${c.purl}`);
+      out.push({ vulnerability, purl: c.purl, status: 'not_affected', justification: 'vulnerable_code_not_in_execute_path',
+        status_notes: `${by}: ${c.name} is used by the project's own code only (${where(u.evidence)}), and no file of the repository mentions the affected function${fn.names.length > 1 ? 's' : ''} that the advisory names (${fn.names.join(', ')}). A suggestion to check: functions of the crate that call them internally are not seen, nor calls made from another crate's code built into yours.`,
+        evidence: { state: 'not_called', functions: fn.names } });
+    } else if (functions.get(`${f.id}|${c.purl}`)?.result === 'mentioned') {
+      const fn = functions.get(`${f.id}|${c.purl}`);
+      out.push({ vulnerability, purl: c.purl, status: 'under_investigation',
+        status_notes: `${by}: ${c.name} is imported, and ${fn.file}:${fn.line} mentions ${fn.name}, an affected function the advisory names. Whether the vulnerable function itself is called is not known at this level: check this call first.`,
+        evidence: { state: 'mentioned', file: fn.file, line: fn.line } });
     } else {
       const lead = u.state === 'imported' ? `${c.name} is ${u.evidence?.[0]?.how ?? 'imported'} in ${where(u.evidence)}` : `${c.name} is loaded through ${u.chain.join(' > ')} (${u.chain[0]}: ${where(u.evidence)})`;
       out.push({ vulnerability, purl: c.purl, status: 'under_investigation',

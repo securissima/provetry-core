@@ -2,7 +2,7 @@
 // Puts it together: components (from lock files or an SBOM) → known vulnerabilities (OSV) → which of them are
 // exploited in the wild (CISA KEV, ENISA EUVD) → how likely the others are to be (FIRST EPSS) → your VEX
 // statements → a prioritized list.
-import { queryPurls, loadDetails, groupRecords, severityOf, fixedVersions } from './vuln/osv.js';
+import { queryPurls, loadDetails, groupRecords, severityOf, fixedVersions, affectedFunctions } from './vuln/osv.js';
 import { loadKev } from './vuln/kev.js';
 import { loadEuvdExploited } from './vuln/euvd.js';
 import { loadEpss, epssOf, EPSS_LIKELY } from './vuln/epss.js';
@@ -84,6 +84,8 @@ export async function scan(ctx, components, opts = {}) {
         score: sev.score,
         vector: sev.vector,
         fixed: [...new Set(g.records.flatMap((r) => fixedVersions(r, c.purl)))],
+        // The affected functions, when the advisory database names them (RustSec): used by reach.
+        functions: [...new Set(g.records.flatMap((r) => affectedFunctions(r, c.purl)))],
         exploited: kevHit || euHit ? { kev: kevHit, euvd: euHit } : null,
         epss: epssOf(epss, g.ids),
         detailsMissing: g.records.every((r) => missingDetails.has(r.id)),
