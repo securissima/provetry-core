@@ -10,7 +10,11 @@ import { projectFiles, readText } from './imports.js';
 import { cacheGet, cacheSet, getJson } from '../util.js';
 import { normalizePypi } from '../purl.js';
 
-export const DATA_URL = 'https://raw.githubusercontent.com/Enigmacker/provetry-vulnerable-functions/main/data';
+// The data is read at a fixed commit, moved deliberately with each release of this tool: whoever can push
+// to the data repository cannot change what a release concludes. Null: not published yet, nothing is read.
+export const DATA_REF = null;
+export const DATA_URL = DATA_REF ? `https://raw.githubusercontent.com/Enigmacker/provetry-vulnerable-functions/${DATA_REF}/data` : null;
+const METHOD = /^provetry-vulnerable-functions\/2 \(/;
 const MAX_AGE = 24 * 3600;
 const ID = /^GHSA(?:-[23456789cfghjmpqrvwx]{4}){3}$/;
 
@@ -21,6 +25,7 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** The records for the findings' advisories (npm, PyPI): Map "id|purl" → record of that package. */
 export async function loadFunctionData(ctx, findings, { baseUrl = DATA_URL } = {}) {
   const out = new Map();
+  if (!baseUrl) return out;
   const wanted = findings.filter((f) => f.component.type === 'npm' || f.component.type === 'pypi');
   const byId = new Map();
   for (const f of wanted) {
@@ -32,9 +37,12 @@ export async function loadFunctionData(ctx, findings, { baseUrl = DATA_URL } = {
         try {
           const { status, json } = await getJson(ctx, `${baseUrl}/${id}.json`);
           records = status === 200 && Array.isArray(json) ? json : [];
-          cacheSet(ctx, `pvf:${id}`, records);
+          // A missing record is an answer; a server error is not (tried again next time).
+          if (status === 200 || status === 404) cacheSet(ctx, `pvf:${id}`, records);
         } catch { records = []; }
       }
+      // Only records of this advisory, made by the method this release knows.
+      records = (records ?? []).filter((r) => r && r.id === id && METHOD.test(String(r.method ?? '')) && typeof r.version === 'string' && Array.isArray(r.entryPoints) && Array.isArray(r.methods) && typeof r.whole === 'boolean');
       byId.set(id, records ?? []);
     }
     const name = f.component.type === 'pypi' ? normalizePypi(f.component.name) : f.component.name;
@@ -69,6 +77,9 @@ export async function packageFunctions(root, findings, components, data) {
     const rec = data.get(`${f.id}|${f.component.purl}`);
     const u = components.get(f.component.purl);
     if (rec.whole || rec.methods?.length || !rec.entryPoints?.length) continue;
+    // Computed on one version: another major or minor version may use other names.
+    const mm = (v) => String(v).split('.').slice(0, 2).join('.');
+    if (mm(rec.version) !== mm(f.component.version)) continue;
     if (!u || u.state !== 'imported' || u.byTool || u.alsoLoadedBy?.length) continue;
     const names = rec.entryPoints.filter((n) => !n.startsWith('module:'));
     const modules = rec.entryPoints.filter((n) => n.startsWith('module:')).map((n) => n.slice(7));
