@@ -1,0 +1,14 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    nokogiri (1.15.4)
+      racc (~> 1.4)
+    racc (1.7.1)
+    rack (2.2.8)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  nokogiri
+  rack

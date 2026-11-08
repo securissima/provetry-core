@@ -1,0 +1,7 @@
+{ "packages": [
+  { "name": "monolog/monolog", "version": "3.5.0", "require": { "psr/log": "^3" }, "autoload": { "psr-4": { "Monolog\\": "src/Monolog" } } },
+  { "name": "psr/log", "version": "3.0.0", "autoload": { "psr-4": { "Psr\\Log\\": "src" } } },
+  { "name": "guzzlehttp/guzzle", "version": "7.4.0", "require": { "guzzlehttp/psr7": "^2" }, "autoload": { "psr-4": { "GuzzleHttp\\": "src/" }, "files": [] } },
+  { "name": "guzzlehttp/psr7", "version": "2.4.0", "autoload": { "psr-4": { "GuzzleHttp\\Psr7\\": "src/" } } },
+  { "name": "symfony/polyfill-mbstring", "version": "1.28.0", "autoload": { "files": ["bootstrap.php"], "psr-4": { "Symfony\\Polyfill\\Mbstring\\": "" } } }
+], "packages-dev": [] }

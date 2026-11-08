@@ -1,0 +1,1 @@
+{ "name": "web", "version": "1.0.0", "dependencies": { "express": "^4", "left-pad": "^1" }, "devDependencies": { "eslint": "^9", "babel-plugin-thing": "^1" }, "scripts": { "lint": "eslint src" } }

@@ -1,4 +1,4 @@
-# Provetry for GitLab CI: SBOM, vulnerability watch and Go reachability at every tag.
+# Provetry for GitLab CI: SBOM, vulnerability watch and reachability (Go functions, package imports elsewhere) at every tag.
 # Include it in your .gitlab-ci.yml:
 #   include:
 #     - remote: https://raw.githubusercontent.com/Enigmacker/provetry-core/main/ci/provetry.gitlab-ci.yml
@@ -27,13 +27,13 @@ provetry:
         if [ -n "$ARCH" ] && [ -n "$GOV" ] && curl -fsSL "https://go.dev/dl/${GOV}.linux-${ARCH}.tar.gz" | tar -C /usr/local -xz \
            && PATH="/usr/local/go/bin:$HOME/go/bin:$PATH" go install golang.org/x/vuln/cmd/govulncheck@latest; then
           export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
-          # A partial result is safe: what a failed module depends on stays "under investigation".
-          node /tmp/provetry/src/cli.js reach . --product "pkg:generic/$CI_PROJECT_NAME@$VERSION" --out reach.vex.json || true
-          [ -s reach.vex.json ] && VEX=(--vex reach.vex.json)
         else
-          echo "Go could not be installed: reachability skipped."
+          echo "Go could not be installed: Go reachability skipped."
         fi
       fi
+      # A partial result is safe: what could not be checked stays "under investigation".
+      node /tmp/provetry/src/cli.js reach . --product "pkg:generic/$CI_PROJECT_NAME@$VERSION" --out reach.vex.json || true
+      [ -s reach.vex.json ] && VEX=(--vex reach.vex.json)
       node /tmp/provetry/src/cli.js scan sbom.cdx.json "${VEX[@]}" --format markdown --out provetry.md || true
       if [ -n "${PROVETRY_API_KEY:-}" ] && [ -n "${PROVETRY_PRODUCT_ID:-}" ]; then
         ENC=$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$VERSION")

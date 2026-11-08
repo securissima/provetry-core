@@ -10,7 +10,10 @@
 // repository and it documents why. It runs where your code and your Go toolchain are (your machine, your
 // CI): nothing is sent anywhere.
 //
-// Other ecosystems have no tool of that precision yet; they are not guessed at.
+// Other ecosystems (npm, PyPI, Cargo, Composer, RubyGems, NuGet) get the import analysis of ./usage/: is
+// the vulnerable package loaded by the code at all? Not loaded: "not_affected" with the chain that brings
+// it in as evidence. Loaded: "under_investigation", with the file that imports it; whether the vulnerable
+// function is called is not known at that level. Where the analysis cannot tell, nothing is said.
 import { spawn } from 'node:child_process';
 import { dirname, join, relative, resolve } from 'node:path';
 import { readFile } from 'node:fs/promises';
@@ -95,7 +98,7 @@ export function fromGovulncheck(doc, { module = '.', version = '' } = {}) {
  * Merges the answers of several modules: a component is "not affected" only if no module calls the
  * vulnerable code. Returns an OpenVEX document about `product` (a purl or IRI naming your product).
  */
-export function mergeReach(lists, { product = 'pkg:generic/product', now = new Date() } = {}) {
+export function mergeReach(lists, { product = 'pkg:generic/product', now = new Date(), tools = ['govulncheck'] } = {}) {
   const byKey = new Map();
   for (const st of lists.flat()) {
     const key = `${st.vulnerability.name}|${st.purl}`;
@@ -110,10 +113,10 @@ export function mergeReach(lists, { product = 'pkg:generic/product', now = new D
   return {
     '@context': 'https://openvex.dev/ns/v0.2.0',
     '@id': `https://provetry.com/reach/${ts}`,
-    author: 'Provetry reachability (govulncheck)',
+    author: `Provetry reachability (${tools.join(', ')})`,
     timestamp: ts,
     version: 1,
-    tooling: `${TOOL.name}/${TOOL.version} + govulncheck`,
+    tooling: [`${TOOL.name}/${TOOL.version}`, ...tools.filter((t) => t !== 'import analysis')].join(' + '),
     statements: [...byKey.values()]
       .sort((a, b) => a.vulnerability.name.localeCompare(b.vulnerability.name) || a.purl.localeCompare(b.purl))
       .map((st) => ({
@@ -123,6 +126,7 @@ export function mergeReach(lists, { product = 'pkg:generic/product', now = new D
         ...(st.justification ? { justification: st.justification } : {}),
         ...(st.status === 'not_affected' ? { impact_statement: st.status_notes } : { status_notes: st.status_notes }),
         ...(st.status === 'affected' ? { action_statement: 'Update the component to a fixed version, or stop calling the vulnerable code.' } : {}),
+        ...(st.evidence ? { 'x-provetry-evidence': st.evidence } : {}),
       })),
   };
 }
@@ -183,3 +187,35 @@ export async function reach(root, { govulncheck = 'govulncheck', product, exec =
   return { doc: merged, modules: modules.map((d) => relative(resolve(root), d) || '.'), errors };
 }
 
+
+const where = (ev = []) => ev.slice(0, 3).map((e) => `${e.file}:${e.line}`).join(', ');
+
+/**
+ * Statements from the import analysis (usage()) for the findings of a scan: one per vulnerability and
+ * component, Go modules left to govulncheck. `found` is usage().components.
+ */
+export function fromUsage(findings, found, { version = TOOL.version } = {}) {
+  const out = [];
+  for (const f of findings) {
+    const c = f.component;
+    if (c.type === 'golang') continue;
+    const u = found.get(c.purl);
+    if (!u || u.state === 'unknown') continue;
+    const vulnerability = { name: f.id, ...(f.ids.length > 1 ? { aliases: f.ids.slice(1) } : {}) };
+    const by = `Provetry ${version} import analysis of ${u.project}`;
+    if (u.state === 'not_loaded') {
+      const via = u.chain.length > 1
+        ? `It comes in through ${u.chain.join(' > ')}, and nothing in the project imports, names or runs ${u.chain[0]} or any package on the way.`
+        : `It is in the lock file, but nothing in the project imports, names or runs it, and no package it loads depends on it.`;
+      out.push({ vulnerability, purl: c.purl, status: 'not_affected', justification: 'vulnerable_code_not_in_execute_path',
+        status_notes: `${by}: ${c.name} is never loaded. ${via} Not seen: code loaded from a name read at run time (from data or the environment).`,
+        evidence: { state: 'not_loaded', chain: u.chain } });
+    } else {
+      const lead = u.state === 'imported' ? `${c.name} is ${u.evidence?.[0]?.how ?? 'imported'} in ${where(u.evidence)}` : `${c.name} is loaded through ${u.chain.join(' > ')} (${u.chain[0]}: ${where(u.evidence)})`;
+      out.push({ vulnerability, purl: c.purl, status: 'under_investigation',
+        status_notes: `${by}: ${lead}. Whether the vulnerable function itself is called is not known at this level.`,
+        evidence: { state: u.state, ...(u.chain ? { chain: u.chain } : {}), files: (u.evidence ?? []).slice(0, 5) } });
+    }
+  }
+  return out;
+}

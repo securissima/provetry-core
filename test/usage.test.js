@@ -1,0 +1,62 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { usage } from '../src/usage/index.js';
+import { npmPackageOf, cargoRenames } from '../src/usage/imports.js';
+import { requirementsGraph } from '../src/usage/graph.js';
+import { fromUsage, mergeReach } from '../src/reach.js';
+
+const root = new URL('./fixtures/usage/', import.meta.url).pathname;
+const u = await usage(root);
+const st = (purl) => u.components.get(purl);
+
+test('import names: packages from specifiers, renamed crates', () => {
+  assert.equal(npmPackageOf('lodash/fp'), 'lodash');
+  assert.equal(npmPackageOf('@scope/pkg/sub'), '@scope/pkg');
+  for (const s of ['./x', '../y', 'node:fs', 'fs', '@/lib/x', '~/a', 'https://x']) assert.equal(npmPackageOf(s), null, s);
+  assert.deepEqual([...cargoRenames('json = { package = "serde_json", version = "1" }')], [['json', 'serde_json']]);
+});
+
+test('npm: imported, loaded through a chain, named in a config, run by a script, never loaded', () => {
+  assert.equal(st('pkg:npm/express@4.18.2').state, 'imported');
+  assert.deepEqual(st('pkg:npm/qs@6.11.0').chain, ['express', 'body-parser', 'qs']);
+  assert.equal(st('pkg:npm/babel-plugin-thing@1.0.0').evidence[0].how, 'named');
+  assert.equal(st('pkg:npm/eslint@9.0.0').evidence[0].how, 'run by a script');
+  assert.equal(st('pkg:npm/minimatch@3.0.4').state, 'loaded');
+  assert.equal(st('pkg:npm/%40fontsource/inter@5.0.0').state, 'imported', 'imported by a style sheet');
+  assert.equal(st('pkg:npm/normalize.css@8.0.1').state, 'imported', 'url(~package)');
+  assert.deepEqual(st('pkg:npm/lodash@4.17.20'), { state: 'not_loaded', chain: ['left-pad', 'lodash'], project: 'web/package-lock.json', ecosystem: 'npm' });
+});
+
+test('Cargo, Composer, Bundler', () => {
+  assert.equal(st('pkg:cargo/serde_json@1.0.108').state, 'imported', 'used under its renamed name');
+  assert.deepEqual(st('pkg:cargo/openssl-sys@0.9.90').chain, ['openssl', 'openssl-sys']);
+  assert.equal(st('pkg:cargo/openssl-sys@0.9.90').state, 'not_loaded');
+  assert.equal(st('pkg:composer/psr/log@3.0.0').state, 'loaded');
+  assert.equal(st('pkg:composer/guzzlehttp/psr7@2.4.0').state, 'not_loaded');
+  assert.equal(st('pkg:composer/symfony/polyfill-mbstring@1.28.0').state, 'imported', 'autoload "files" always runs');
+  assert.equal(st('pkg:gem/racc@1.7.1').state, 'loaded', 'Bundler.require loads every gem of the Gemfile');
+});
+
+test('Python: no conclusion of absence without sure import names', () => {
+  assert.equal(st('pkg:pypi/requests@2.31.0').state, 'imported');
+  assert.equal(st('pkg:pypi/urllib3@2.0.7').state, 'loaded');
+  assert.equal(st('pkg:pypi/pyyaml@6.0.1').state, 'not_loaded', 'pyyaml installs "yaml": known');
+  assert.equal(st('pkg:pypi/somelib@1.0.0').state, 'unknown');
+  assert.equal(st('pkg:pypi/six@1.16.0').state, 'unknown', 'what an unsure package depends on is unsure too');
+  assert.equal(requirementsGraph('flask==3.0.0\n').complete, false, 'no "# via": no graph');
+  assert.equal(st('pkg:pypi/markupsafe@2.1.3').state, 'loaded');
+});
+
+test('OpenVEX: never loaded becomes a "not affected" suggestion with its chain; loaded stays open', () => {
+  const finding = (purl, name, id) => ({ id, ids: [id, `CVE-${id}`], component: { type: purl.split(/[:/]/)[1], name, purl } });
+  const s = fromUsage([finding('pkg:npm/lodash@4.17.20', 'lodash', 'GHSA-1'), finding('pkg:npm/qs@6.11.0', 'qs', 'GHSA-2'), finding('pkg:pypi/six@1.16.0', 'six', 'PYSEC-3')], u.components, { version: 't' });
+  assert.equal(s.length, 2, 'nothing said when the analysis cannot tell');
+  assert.equal(s[0].status, 'not_affected');
+  assert.equal(s[0].justification, 'vulnerable_code_not_in_execute_path');
+  assert.match(s[0].status_notes, /left-pad > lodash.*Not seen: code loaded from a name read at run time/);
+  assert.equal(s[1].status, 'under_investigation');
+  assert.match(s[1].status_notes, /express > body-parser > qs \(express: src\/index\.ts:1\)/);
+  const doc = mergeReach([s], { product: 'pkg:generic/x', tools: ['import analysis'], now: new Date('2026-11-08T00:00:00Z') });
+  assert.equal(doc.statements[0].impact_statement, s[0].status_notes);
+  assert.equal(doc.tooling.includes('import analysis'), false);
+});

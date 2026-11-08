@@ -9,7 +9,7 @@ Since 11 September 2026, manufacturers of products with digital elements sold in
 
 - **`provetry sbom`** reads the lock files in your repository and writes a CycloneDX 1.6 or SPDX 2.3 SBOM;
 - **`provetry scan`** lists the known vulnerabilities in those components, **the ones exploited in the wild first** (CISA KEV and ENISA's EU Vulnerability Database), with the version that fixes each one, and takes your VEX statements into account;
-- **`provetry reach`** tells, for Go, which vulnerable functions your code really calls (with the Go team's govulncheck), and records the others as not affected, with the reason;
+- **`provetry reach`** tells which vulnerable code your product really uses: for Go, function by function (with the Go team's govulncheck); for npm, PyPI, Cargo, Composer, RubyGems and NuGet, package by package (is it loaded at all?), with the evidence;
 - **`provetry clock`** gives the Article 14 deadlines from the moment you became aware.
 
 Free, open source, no account, no telemetry, no dependency. Node.js 22 or later.
@@ -25,7 +25,7 @@ Free, open source, no account, no telemetry, no dependency. Node.js 22 or later.
 - [SBOM](#sbom)
 - [Vulnerability scan](#vulnerability-scan)
 - [VEX: saying what does not affect you](#vex-saying-what-does-not-affect-you)
-- [Reachability: is the vulnerable code called?](#reachability-is-the-vulnerable-code-called)
+- [Reachability: is the vulnerable code used?](#reachability-is-the-vulnerable-code-used)
 - [End of life of your components](#end-of-life-of-your-components)
 - [Checking an evidence journal](#checking-an-evidence-journal)
 - [Article 14 reporting clock](#article-14-reporting-clock)
@@ -120,7 +120,7 @@ A vulnerable library is not always a vulnerable product: the function at fault m
 
 To start, `--vex-template vex.json` writes an OpenVEX file with one `under_investigation` statement per finding. Change each status as you assess it, and keep the file in your repository: it documents your vulnerability handling.
 
-## Reachability: is the vulnerable code called?
+## Reachability: is the vulnerable code used?
 
 Most vulnerabilities reported in dependencies cannot be reached from your product: the function at fault is never called. For Go, [govulncheck](https://go.dev/doc/security/vuln/) builds the call graph of your code and knows. `provetry reach` runs it in every Go module of the repository and writes one OpenVEX document:
 
@@ -137,7 +137,17 @@ provetry scan . --vex reach.vex.json
 
 What it cannot see, and the document says so: calls through reflection, cgo or plugins, and code built only for other platforms or build tags than the ones it ran with. The Go standard library is left out (govulncheck checks the Go that runs it, not necessarily the one that builds your product). Reachability is about your source code: when you describe a container image, other binaries in it are not covered.
 
-Other ecosystems have no tool of that precision yet; Provetry does not guess for them.
+### Other ecosystems: is the vulnerable package loaded at all?
+
+For npm, PyPI, Cargo, Composer, RubyGems and NuGet, `provetry reach` reads the dependency graph in the lock files and the imports in your source files (nothing is executed), then looks the vulnerabilities up (OSV.dev; `--offline` uses the cache only):
+
+- **Never loaded**: nothing in the project imports, names or runs the package, nor any package that leads to it. `not_affected`, justification `vulnerable_code_not_in_execute_path`, with the chain that brings it in (`left-pad > lodash`) as evidence. Typical cases: a dependency nobody uses any more, a heavy optional feature of a library you do not touch, type packages.
+- **Loaded**: imported by a file of the project (file and line given), or depended on by something that is. `under_investigation`: at this level, nobody can say whether the vulnerable function itself is called.
+- **Cannot tell**: nothing is said.
+
+Conservative on purpose. A package named in any of the project's own files counts as used: configurations that load plugins by name (`.babelrc`, `eslint.config.js`), style sheets (`@import`), scripts of `package.json` that run its command. Composer packages with `files` autoloading run on every request; with `Bundler.require`, every gem of the Gemfile is loaded. Python import names often differ from package names (`pyyaml` installs `yaml`): absence is only concluded when they are known, from a virtual environment in the project (`.venv`) or from a built-in list; otherwise nothing is concluded. RubyGems and NuGet give evidence of use, never of absence. A `requirements.txt` gives a graph only when made by pip-compile (its `# via` comments).
+
+What it cannot see: code loaded from a name read at run time, from data or the environment. In the Provetry service, these results are suggestions with their evidence, which you accept or not; they never become your statement on their own.
 
 ## End of life of your components
 

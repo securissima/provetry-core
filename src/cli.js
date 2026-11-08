@@ -9,7 +9,8 @@ import { toCycloneDx, toSpdx } from './sbom/write.js';
 import { scan, reachesThreshold } from './scan.js';
 import { readVex, vexTemplate } from './vex.js';
 import { reportingClock } from './clock.js';
-import { reach } from './reach.js';
+import { reach, goModules, mergeReach, fromUsage } from './reach.js';
+import { usage } from './usage/index.js';
 import { endOfLife } from './vuln/eol.js';
 import { verifyChain, verifyTimestamps, readCertificates, lateCoverage } from './journal.js';
 import { toText, toMarkdown, toJson, toSarif, clockText } from './report.js';
@@ -21,7 +22,8 @@ const HELP = `provetry ${VERSION}: SBOM and vulnerability watch for the EU Cyber
 Usage
   provetry sbom  [dir]            Write an SBOM from the lock files found in dir (default: .)
   provetry scan  [dir|sbom.json]  List known vulnerabilities, those exploited in the wild first
-  provetry reach [dir]            Which vulnerabilities are really called by your code (Go, with govulncheck)
+  provetry reach [dir]            Which vulnerable code your product really uses: function by function for Go
+                                  (govulncheck), package by package for npm, PyPI, Cargo, Composer, RubyGems, NuGet
   provetry eol   [dir|sbom.json]  Components whose support ends, before your own support period does
   provetry clock --since <date>   Article 14 reporting deadlines from the moment you became aware
   provetry verify-journal <file> [--head <hash>] [--tsa-ca <pem>]  Check an evidence journal exported from Provetry (hash chain, timestamps)
@@ -49,6 +51,8 @@ reach options
   --out <file>              write the OpenVEX document to a file (default: standard output)
   --product <purl>          how the document names your product (default: pkg:generic/<dir name>)
   --govulncheck <path>      the govulncheck binary (default: govulncheck on the PATH)
+  --no-imports              Go only: skip the import analysis of the other ecosystems
+  --offline, --no-cache     as for scan (the import analysis looks the vulnerabilities up)
 
 eol options
   --support-until <date>    end of your product's support period (YYYY-MM-DD): flags earlier ends
@@ -195,24 +199,57 @@ export async function main(argv) {
     const { values, positionals } = parseArgs({
       args: rest,
       allowPositionals: true,
-      options: { out: { type: 'string' }, product: { type: 'string' }, govulncheck: { type: 'string', default: 'govulncheck' } },
+      options: { out: { type: 'string' }, product: { type: 'string' }, govulncheck: { type: 'string', default: 'govulncheck' }, 'no-imports': { type: 'boolean', default: false }, offline: { type: 'boolean', default: false }, 'no-cache': { type: 'boolean', default: false } },
     });
+    if (values.offline && values['no-cache']) fail('--offline needs the cache');
     const dir = resolve(positionals[0] ?? '.');
     const st = await stat(dir).catch(() => null);
     if (!st?.isDirectory()) fail(`${positionals[0] ?? '.'} is not a directory`);
     const product = values.product ?? `pkg:generic/${encodeURIComponent(basename(dir))}`;
-    let r;
-    try {
-      r = await reach(dir, { govulncheck: values.govulncheck, product });
-    } catch (e) {
-      fail(e.message);
+    const lists = [];
+    const tools = [];
+    let incomplete = false;
+    const summary = [];
+
+    // Go: govulncheck, function by function.
+    const goMods = await goModules(dir);
+    if (goMods.length) {
+      try {
+        const r = await reach(dir, { govulncheck: values.govulncheck, product });
+        for (const e of r.errors) process.stderr.write(`provetry: govulncheck failed in ${clean(e.module)}: ${clean(e.error)}\n`);
+        if (r.errors.length) incomplete = true;
+        lists.push(r.doc.statements.map((x) => ({ vulnerability: x.vulnerability, purl: x.products[0].subcomponents[0]['@id'], status: x.status, justification: x.justification, status_notes: x.impact_statement ?? x.status_notes })));
+        tools.push('govulncheck');
+        const n = (s) => r.doc.statements.filter((x) => x.status === s).length;
+        summary.push(`${r.modules.length} Go module${r.modules.length > 1 ? 's' : ''}: ${n('affected')} vulnerable function${n('affected') === 1 ? '' : 's'} called, ${n('not_affected')} not called`);
+      } catch (e) {
+        process.stderr.write(`provetry: ${clean(e.message)}\n`);
+        incomplete = true;
+      }
     }
-    if (!r.modules.length) fail('no go.mod found: reachability is available for Go modules (other ecosystems have no tool of that precision yet)');
-    for (const e of r.errors) process.stderr.write(`provetry: govulncheck failed in ${clean(e.module)}: ${clean(e.error)}\n`);
-    await emit(JSON.stringify(r.doc, null, 2) + '\n', values.out);
-    const n = (s) => r.doc.statements.filter((x) => x.status === s).length;
-    process.stderr.write(`provetry: ${r.modules.length} Go module${r.modules.length > 1 ? 's' : ''} checked: ${n('affected')} vulnerable function${n('affected') === 1 ? '' : 's'} called, ${n('not_affected')} not called\n`);
-    if (r.errors.length) process.exitCode = 2;
+
+    // Every other ecosystem: is the vulnerable package loaded at all?
+    if (!values['no-imports']) {
+      const u = await usage(dir);
+      for (const e of u.errors) process.stderr.write(`provetry: ${clean(e.file)}: ${clean(e.error)}\n`);
+      if (u.projects.length) {
+        const comps = (await collect(dir)).components.filter((c) => c.type !== 'golang');
+        const ctx = await defaultContext({ cache: !values['no-cache'] });
+        ctx.offline = values.offline;
+        const r = await scan(ctx, comps, { includeDev: true, epss: false });
+        if (!r.complete) { incomplete = true; process.stderr.write('provetry: some vulnerability sources did not answer: the result may be incomplete\n'); }
+        const statements = fromUsage([...r.findings, ...r.suppressed], u.components);
+        lists.push(statements);
+        tools.push('import analysis');
+        const n = (s) => statements.filter((x) => x.status === s).length;
+        summary.push(`${u.projects.length} lock file${u.projects.length > 1 ? 's' : ''}: ${n('not_affected')} vulnerable package${n('not_affected') === 1 ? '' : 's'} never loaded, ${n('under_investigation')} loaded`);
+      }
+    }
+    if (!lists.length) fail('nothing to analyse: no go.mod and no lock file with a dependency graph (package-lock.json, pnpm-lock.yaml, yarn.lock, Cargo.lock, poetry.lock, uv.lock, composer.lock, Gemfile.lock, packages.lock.json, requirements.txt from pip-compile)');
+    const doc = mergeReach(lists, { product, tools });
+    await emit(JSON.stringify(doc, null, 2) + '\n', values.out);
+    process.stderr.write(`provetry: ${summary.join('; ')}\n`);
+    if (incomplete) process.exitCode = 2;
     return;
   }
 

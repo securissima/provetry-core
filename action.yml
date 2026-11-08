@@ -1,5 +1,5 @@
 name: Provetry
-description: SBOM, vulnerability watch and Go reachability for the EU Cyber Resilience Act, at every release.
+description: SBOM, vulnerability watch and reachability (Go functions, package imports elsewhere) for the EU Cyber Resilience Act, at every release.
 author: Provetry
 branding:
   icon: check-circle
@@ -19,7 +19,7 @@ inputs:
     description: A container image to describe instead of the lock files (generated with Syft), e.g. ghcr.io/acme/gateway:2.4.0.
     default: ""
   reachability:
-    description: "auto: with Go modules, run govulncheck to tell called from never-called vulnerabilities. off: skip."
+    description: "auto: tell used from never-used vulnerable code (govulncheck for Go modules, import analysis for npm, PyPI, Cargo, Composer, RubyGems, NuGet). off: skip."
     default: auto
   fail-on:
     description: "Fail the job when a finding reaches: exploited, critical, high, medium, low, any, or none."
@@ -104,7 +104,7 @@ runs:
       run: '"$SYFT" "$P_IMAGE" -o "cyclonedx-json=$P_OUT"'
 
     # Reachability reads the source; it says nothing about the other binaries an image may contain.
-    - name: Reachability (Go)
+    - name: Reachability
       id: reach
       if: inputs.reachability != 'off' && inputs.image == ''
       shell: bash
@@ -114,21 +114,23 @@ runs:
         P_DIR: ${{ steps.files.outputs.dir }}
       run: |
         set -uo pipefail
-        if [ -z "$(find "$P_PATH" -name go.mod -not -path '*/vendor/*' -not -path '*/node_modules/*' -print -quit)" ]; then
-          echo "No Go module: reachability skipped."; exit 0
+        args=()
+        if [ -n "$(find "$P_PATH" -name go.mod -not -path '*/vendor/*' -not -path '*/node_modules/*' -print -quit)" ]; then
+          if command -v go >/dev/null; then
+            go install golang.org/x/vuln/cmd/govulncheck@latest
+            export PATH="$(go env GOPATH)/bin:$PATH"
+          else
+            echo "::notice::Provetry: Go modules found but no Go toolchain: add actions/setup-go before this step for Go reachability."
+          fi
         fi
-        if ! command -v go >/dev/null; then
-          echo "::notice::Provetry: Go modules found but no Go toolchain: add actions/setup-go before this step for reachability."; exit 0
-        fi
-        go install golang.org/x/vuln/cmd/govulncheck@latest
-        export PATH="$(go env GOPATH)/bin:$PATH"
         if node "$GITHUB_ACTION_PATH/src/cli.js" reach "$P_PATH" --product "$P_PRODUCT" --out "$P_DIR/reach.vex.json"; then
           echo "vex=$P_DIR/reach.vex.json" >> "$GITHUB_OUTPUT"
         else
-          # The document stays usable: whatever a failed module depends on is "under investigation", never "not affected".
-          echo "::warning::Provetry: govulncheck could not check every Go module (see above); their dependencies are left under investigation."
+          # The document stays usable: what could not be checked is "under investigation", never "not affected".
+          echo "::warning::Provetry: reachability could not check everything (see above); what was not checked is left under investigation."
           [ -s "$P_DIR/reach.vex.json" ] && echo "vex=$P_DIR/reach.vex.json" >> "$GITHUB_OUTPUT"
         fi
+        exit 0
 
     - name: Scan
       id: scan
