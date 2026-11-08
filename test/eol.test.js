@@ -8,6 +8,8 @@ const IDS = { schema_version: '1.2.0', result: [
   { identifier: 'pkg:npm/%40angular/core', product: { name: 'angular', uri: 'x' } },
   { identifier: 'pkg:pypi/django', product: { name: 'django', uri: 'x' } },
   { identifier: 'pkg:npm/bad', product: { name: '../etc', uri: 'x' } },
+  { identifier: 'pkg:npm/dots', product: { name: '..', uri: 'x' } },
+  { identifier: 'pkg:npm/flaky', product: { name: 'flaky', uri: 'x' } },
 ] };
 const PRODUCTS = {
   angular: { result: { label: 'Angular', releases: [
@@ -52,8 +54,10 @@ test('end of life: compared with the product support period; unknown components 
     { purl: 'pkg:npm/left-pad@1.3.0', name: 'left-pad', version: '1.3.0' },
     { purl: 'pkg:npm/bad@1.0.0', name: 'bad', version: '1.0.0' },
   ];
+  comps.push({ purl: 'pkg:npm/dots@1.0.0', name: 'dots', version: '1.0.0' }, { purl: 'pkg:npm/flaky@1.0.0', name: 'flaky', version: '1.0.0' });
   const r = await endOfLife({ fetchJson: fetchOf(calls), cache: memoryCache() }, comps, { supportUntil: '2031-12-31', today: new Date('2026-11-08T00:00:00Z') });
-  assert.equal(r.known, 3, 'left-pad is not known; the bad product name is refused');
+  assert.equal(r.known, 4, 'left-pad is not known; the bad product names are refused');
+  assert.deepEqual(r.failed, ['flaky'], 'a product that did not answer is reported, not silently dropped');
   assert.deepEqual(r.results.map((x) => `${x.name}@${x.version}:${x.cycle}:${x.isEol}:${x.beforeSupportEnd}`), [
     '@angular/core@17.3.0:17:true:true', '@angular/core@20.1.0:20:false:true', 'django@5.2.3:5.2:false:true',
   ]);
@@ -77,6 +81,12 @@ test('EPSS: batches of 100, unscored CVEs remembered as such, best score of the 
   assert.equal(m.size, 15);
   await loadEpss(ctx, cves);
   assert.equal(calls.length, 2, 'scored and unscored CVEs both come from the cache the second time');
+  assert.deepEqual(m.missed, []);
+  const half = await loadEpss({ fetchJson: async (url) => (url.includes('10000') ? { status: 503, json: null } : fetchJson(url)), cache: memoryCache() }, cves);
+  assert.equal(half.missed.length, 100, 'the failed batch is reported as unknown');
+  const off = await loadEpss({ ...ctx, offline: true }, [...cves.slice(0, 3), 'CVE-2030-0001']);
+  assert.equal(off.size, 1);
+  assert.deepEqual(off.missed, ['CVE-2030-0001'], 'offline: cached scores kept, the rest unknown');
   m.set('CVE-1999-0001', { score: 0.9, percentile: 1, date: null });
   assert.equal(epssOf(m, ['GHSA-x', 'CVE-2026-10001', 'CVE-1999-0001']).cve, 'CVE-1999-0001');
   assert.equal(epssOf(m, ['CVE-2026-10000']), null);

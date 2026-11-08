@@ -50,6 +50,7 @@ reach options
 
 eol options
   --support-until <date>    end of your product's support period (YYYY-MM-DD): flags earlier ends
+                            (exit code 1 when a component is unsupported or ends earlier)
   --json                    machine-readable output
   --offline, --no-cache     as for scan
 
@@ -238,9 +239,11 @@ export async function main(argv) {
       out.push(clean(`${x.isEol ? '!! ' : x.beforeSupportEnd ? '!  ' : '   '}${x.name}@${x.version}  ${x.label} ${x.cycle}: ${when}${x.beforeSupportEnd && !x.isEol ? ', before your own support period ends' : ''}${x.latest ? ` (latest ${x.latest})` : ''}`));
     }
     if (!r.results.length) out.push('Nothing to report for the components it knows.');
+    if (r.failed.length) out.push('', `! Not checked this time (endoflife.date did not answer): ${r.failed.join(', ')}.`);
     if (!until) out.push('', 'Add --support-until <date> to flag components whose support ends before yours.');
     process.stdout.write(out.join('\n') + '\n');
     if (r.results.some((x) => x.isEol || x.beforeSupportEnd)) process.exitCode = 1;
+    else if (r.failed.length) process.exitCode = 2;
     return;
   }
 

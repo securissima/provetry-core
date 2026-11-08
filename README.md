@@ -144,7 +144,7 @@ Other ecosystems have no tool of that precision yet; Provetry does not guess for
 provetry eol [dir | sbom.json] [--support-until 2031-12-31] [--json] [--offline] [--no-cache]
 ```
 
-You must handle the vulnerabilities of your product for its whole support period (CRA, Article 13(8)), and exercise due diligence on the components you integrate (Article 13(5)). A component whose own support ends before yours will stop getting security fixes while you still owe them. `provetry eol` looks your components up on [endoflife.date](https://endoflife.date), finds the release cycle of each version, and flags those already unsupported (`!!`) or whose support ends before the date you give (`!`). Exit code 1 when one is flagged.
+You must handle the vulnerabilities of your product for its whole support period (CRA, Article 13(8)), and exercise due diligence on the components you integrate (Article 13(5)). A component whose own support ends before yours will stop getting security fixes while you still owe them. `provetry eol` looks your components up on [endoflife.date](https://endoflife.date), finds the release cycle of each version, and flags those already unsupported (`!!`) or whose support ends before the date you give (`!`). Exit code 1 when one is flagged, 2 when some products could not be checked.
 
 Only components endoflife.date knows by package URL are checked: frameworks, runtimes and databases mostly, not small libraries without a published support policy. Nothing is guessed for the others.
 

@@ -30,7 +30,7 @@ async function identifiers(ctx) {
   const obj = {};
   for (const r of json.result) {
     const name = r?.product?.name;
-    if (typeof r?.identifier === 'string' && typeof name === 'string' && /^[a-z0-9._-]+$/i.test(name)) obj[purlBase(r.identifier)] = name;
+    if (typeof r?.identifier === 'string' && typeof name === 'string' && /^[a-z0-9][a-z0-9._-]*$/i.test(name) && !name.includes('..')) obj[purlBase(r.identifier)] = name;
   }
   cacheSet(ctx, 'eol:purl', obj);
   return new Map(Object.entries(obj));
@@ -66,16 +66,20 @@ export function cycleOf(list, version) {
  * For each component endoflife.date knows: its release cycle and when that cycle stops being supported.
  * `supportUntil` (YYYY-MM-DD) is the end of your own product's support period: a component whose end of
  * life comes earlier is flagged `beforeSupportEnd`.
- * @returns {Promise<{ results: object[], checked: number, known: number }>}
+ * `failed` lists the endoflife.date products that could not be fetched this time (or were over the limit):
+ * whoever keeps earlier results should keep theirs for those.
+ * @returns {Promise<{ results: object[], checked: number, known: number, failed: string[] }>}
  */
 export async function endOfLife(ctx, components, { supportUntil = null, today = new Date() } = {}) {
   const ids = await identifiers(ctx);
   const day = today.toISOString().slice(0, 10);
   const matched = components.map((c) => ({ c, product: ids.get(purlBase(c.purl)) })).filter((m) => m.product);
-  const products = [...new Set(matched.map((m) => m.product))].slice(0, 100);
+  const all = [...new Set(matched.map((m) => m.product))];
+  const products = all.slice(0, 100);
+  const failed = all.slice(100);
   const data = new Map();
   await mapLimit(products, 4, async (p) => {
-    try { data.set(p, await releases(ctx, p)); } catch (e) { if (e.code === 'OFFLINE') throw e; }
+    try { data.set(p, await releases(ctx, p)); } catch { failed.push(p); }
   });
   const results = [];
   for (const { c, product } of matched) {
@@ -93,5 +97,5 @@ export async function endOfLife(ctx, components, { supportUntil = null, today = 
     });
   }
   results.sort((a, b) => Number(b.isEol) - Number(a.isEol) || (a.eolFrom ?? '9999').localeCompare(b.eolFrom ?? '9999') || a.name.localeCompare(b.name));
-  return { results, checked: components.length, known: matched.length };
+  return { results, checked: components.length, known: matched.length, failed };
 }

@@ -12,9 +12,14 @@ const BATCH = 100;
 /** A score of 10% or more: among the small share of vulnerabilities attackers actually go after. */
 export const EPSS_LIKELY = 0.1;
 
-/** Map<cve, { score, percentile, date }> for the CVEs that have a score. Throws when the service cannot be reached at all. */
+/**
+ * Map<cve, { score, percentile, date }> for the CVEs that have a score. Throws when the service cannot be
+ * reached at all. `map.missed` lists the CVEs whose batch failed (or were not cached, offline): their score
+ * is unknown, not absent.
+ */
 export async function loadEpss(ctx, cveList) {
   const out = new Map();
+  out.missed = [];
   const missing = [];
   for (const cve of new Set(cveList.filter((c) => CVE_RE.test(c)))) {
     const c = cacheGet(ctx, `epss:${cve}`, MAX_AGE);
@@ -24,10 +29,12 @@ export async function loadEpss(ctx, cveList) {
   const batches = [];
   for (let i = 0; i < missing.length; i += BATCH) batches.push(missing.slice(i, i + BATCH));
   let failed = 0;
+  // Offline: what the cache holds, and the rest marked as unknown.
+  if (ctx.offline) { out.missed = missing; if (missing.length && !out.size) throw Object.assign(new Error('offline'), { code: 'OFFLINE' }); return out; }
   await mapLimit(batches, 2, async (batch) => {
     try {
       const { status, json } = await getJson(ctx, `${EPSS_URL}?cve=${batch.join(',')}`);
-      if (status !== 200 || !Array.isArray(json?.data)) { failed++; return; }
+      if (status !== 200 || !Array.isArray(json?.data)) { failed++; out.missed.push(...batch); return; }
       const seen = new Set();
       for (const row of json.data) {
         const score = Number(row.epss);
@@ -40,9 +47,9 @@ export async function loadEpss(ctx, cveList) {
       }
       // Not scored (too recent, or rejected): remembered as such for a day.
       for (const cve of batch) if (!seen.has(cve)) cacheSet(ctx, `epss:${cve}`, null);
-    } catch (e) {
-      if (e.code === 'OFFLINE') throw e;
+    } catch {
       failed++;
+      out.missed.push(...batch);
     }
   });
   if (batches.length && failed === batches.length) throw new Error('EPSS unavailable');

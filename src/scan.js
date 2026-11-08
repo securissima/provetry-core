@@ -54,7 +54,8 @@ export async function scan(ctx, components, opts = {}) {
     const cves = [...details.values()].flatMap((r) => [r.id, ...(r.aliases ?? [])]);
     try {
       epss = await loadEpss(ctx, cves);
-      sources.push({ name: 'FIRST EPSS', ok: true });
+      // Partial: some scores are unknown (a batch failed); keepers of earlier scores should keep them.
+      sources.push({ name: 'FIRST EPSS', ok: true, ...(epss.missed?.length ? { partial: true, note: `${epss.missed.length} CVE${epss.missed.length > 1 ? 's' : ''} not scored this time` } : {}) });
     } catch (e) {
       // Only a ranking aid: without it nothing is missed, so the scan is still complete.
       sources.push({ name: 'FIRST EPSS', ok: false, optional: true, note: e.code ?? e.message });
