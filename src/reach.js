@@ -215,6 +215,12 @@ export function fromUsage(findings, found, { version = TOOL.version, functions =
       out.push({ vulnerability, purl: c.purl, status: 'not_affected', justification: 'vulnerable_code_not_in_execute_path',
         status_notes: `${by}: ${c.name} is used by the project's own code only (${where(u.evidence)}), and no file of the repository mentions the function${fn.names.length > 1 ? 's' : ''} ${which}: ${fn.names.join(', ')}. A suggestion to check: not seen are calls through callbacks, dynamic property access or another package's generic code.`,
         evidence: { state: 'not_called', functions: fn.names } });
+    } else if (functions.get(`${f.id}|${c.purl}`)?.called) {
+      const fn = functions.get(`${f.id}|${c.purl}`);
+      const k = fn.called;
+      out.push({ vulnerability, purl: c.purl, status: 'under_investigation',
+        status_notes: `${by}: ${c.name} is imported, and the call analysis (${k.by}) finds a call of ${c.name}'s ${k.name} at ${k.file}:${k.line}, ${fn.source ? `a function that leads to the fixed code (${fn.source})` : 'an affected function the advisory names'}. The vulnerable code is likely reached through this call: check it first.`,
+        evidence: { state: 'called', file: k.file, line: k.line, function: k.name } });
     } else if (functions.get(`${f.id}|${c.purl}`)?.result === 'mentioned') {
       const fn = functions.get(`${f.id}|${c.purl}`);
       out.push({ vulnerability, purl: c.purl, status: 'under_investigation',
