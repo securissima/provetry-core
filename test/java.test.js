@@ -126,3 +126,56 @@ test('Java build graph: refused when a component does not list its dependencies'
   assert.equal(javaBomGraph(JSON.stringify({ ...ok, dependencies: [{ ref: 'p', dependsOn: ['a'] }] })), null);
   assert.equal(javaBomGraph('not json'), null);
 });
+
+test('Java build graph: refused when it may hide a link', async () => {
+  const { javaBomGraph, javaGraph } = await import('../src/usage/graph.js');
+  const base = (n, shared) => {
+    const comps = Array.from({ length: n }, (_, i) => ({ 'bom-ref': `c${i}`, purl: `pkg:maven/g/c${i}@1` }));
+    const deps = [{ ref: 'p', dependsOn: comps.map((c) => c['bom-ref']).slice(0, 2) }, ...comps.map((c, i) => ({ ref: c['bom-ref'], dependsOn: i >= 2 || i + 2 >= n ? [] : [`c${i + 2}`] }))];
+    if (shared) deps[2].dependsOn.push('c3');
+    return { bomFormat: 'CycloneDX', metadata: { component: { 'bom-ref': 'p' } }, components: comps, dependencies: deps };
+  };
+  assert.equal(javaBomGraph(JSON.stringify(base(12, false))), null, 'a big tree with nothing shared: duplicates were left out');
+  assert.ok(javaBomGraph(JSON.stringify(base(12, true))));
+  const unknown = base(3, false); unknown.dependencies[0].dependsOn.push('npm-thing');
+  assert.equal(javaBomGraph(JSON.stringify(unknown)), null, 'a link to something not a Maven component');
+  // stale or partial SBOM next to the build file
+  const { mkdtempSync, writeFileSync, mkdirSync, utimesSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(`${tmpdir()}/provetry-bom-`);
+  writeFileSync(`${dir}/pom.xml`, '<project><groupId>a</groupId><artifactId>b</artifactId><version>1</version><dependencies><dependency><groupId>g</groupId><artifactId>c0</artifactId><version>1</version></dependency><dependency><groupId>g</groupId><artifactId>other</artifactId><version>1</version></dependency></dependencies></project>');
+  mkdirSync(`${dir}/target`);
+  writeFileSync(`${dir}/target/bom.json`, JSON.stringify(base(3, false)));
+  assert.equal((await javaGraph(`${dir}/pom.xml`)).complete, false, 'g:other is not in the SBOM: another build');
+  writeFileSync(`${dir}/pom.xml`, '<project><groupId>a</groupId><artifactId>b</artifactId><version>1</version><dependencies><dependency><groupId>g</groupId><artifactId>c0</artifactId><version>1</version></dependency></dependencies></project>');
+  utimesSync(`${dir}/target/bom.json`, new Date(Date.now() - 86_400_000), new Date(Date.now() - 86_400_000));
+  assert.equal((await javaGraph(`${dir}/pom.xml`)).complete, false, 'older than the build file');
+  utimesSync(`${dir}/target/bom.json`, new Date(), new Date(Date.now() + 1000));
+  assert.equal((await javaGraph(`${dir}/pom.xml`)).complete, true);
+});
+
+test('Java function level: no conclusion with annotation processors, vendored jars or operator names', async () => {
+  const { packageFunctions } = await import('../src/usage/functions.js');
+  const { usage } = await import('../src/usage/index.js');
+  const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const make = (extra = {}) => {
+    const dir = mkdtempSync(`${tmpdir()}/provetry-java-blind-`);
+    writeFileSync(`${dir}/pom.xml`, '<project><groupId>acme</groupId><artifactId>app</artifactId><version>1</version><dependencies><dependency><groupId>com.github.junrar</groupId><artifactId>junrar</artifactId><version>7.5.0</version></dependency></dependencies></project>');
+    mkdirSync(`${dir}/target`);
+    const comps = [{ 'bom-ref': 'j', purl: 'pkg:maven/com.github.junrar/junrar@7.5.0' }];
+    writeFileSync(`${dir}/target/bom.json`, JSON.stringify({ bomFormat: 'CycloneDX', metadata: { component: { 'bom-ref': 'app' } }, components: comps, dependencies: [{ ref: 'app', dependsOn: ['j'] }, { ref: 'j', dependsOn: [] }] }));
+    mkdirSync(`${dir}/src/main/java/acme`, { recursive: true });
+    writeFileSync(`${dir}/src/main/java/acme/App.java`, `package acme;\nimport com.github.junrar.Archive;\n${extra.imports ?? ''}class App { void go() { new Archive(null); } }\n`);
+    for (const [p, t] of Object.entries(extra.files ?? {})) writeFileSync(`${dir}/${p}`, t);
+    return dir;
+  };
+  const finding = { id: 'GHSA-89m4-43j5-vhhx', ids: ['GHSA-89m4-43j5-vhhx'], component: { type: 'maven', name: 'com.github.junrar:junrar', version: '7.5.0', purl: 'pkg:maven/com.github.junrar/junrar@7.5.0' } };
+  const key = `${finding.id}|${finding.component.purl}`;
+  const data = (names) => new Map([[key, { id: finding.id, ecosystem: 'Maven', package: 'com.github.junrar:junrar', version: '7.5.0', entryPoints: names, methods: [], whole: false, advisory: finding.id }]]);
+  const run = async (opts, names = ['extract']) => { const dir = make(opts); return packageFunctions(dir, [finding], (await usage(dir)).components, data(names)); };
+  assert.equal((await run({})).get(key).result, 'not_mentioned');
+  assert.equal((await run({ imports: 'import lombok.extern.slf4j.Slf4j;\n' })).has(key), false, 'Lombok writes calls the sources do not show');
+  assert.equal((await run({ files: { 'vendor.jar': 'x' } })).has(key), false, 'a jar kept in the repository');
+  assert.equal((await run({}, ['plus'])).has(key), false, 'an operator name');
+});

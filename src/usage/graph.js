@@ -360,15 +360,24 @@ export const JAVA_BUILD_BOMS = ['target/bom.json', 'target/classes/META-INF/sbom
 
 export async function javaGraph(path) {
   const { readLockFile } = await import('../lockfiles/index.js');
+  const declared = await readLockFile(path);
+  const { stat } = await import('node:fs/promises');
+  const built = (await stat(path)).mtimeMs;
   for (const rel of JAVA_BUILD_BOMS) {
+    const file = `${dirname(path)}/${rel}`;
     let text = null;
-    try { text = await readFile(`${dirname(path)}/${rel}`, 'utf8'); } catch { continue; }
+    try {
+      // Older than the build file: a leftover of another build, not this one's graph.
+      if ((await stat(file)).mtimeMs < built) continue;
+      text = await readFile(file, 'utf8');
+    } catch { continue; }
     const g = javaBomGraph(text);
-    if (g) return g;
+    // Every component the build file declares must be in it (the same build, the same configuration).
+    if (g && declared.every((c) => [...g.nodes.values()].some((n) => n.name === c.name))) return g;
   }
   const g = graph('maven');
   g.complete = false;
-  for (const c of await readLockFile(path)) { node(g, 'maven', c.name, c.version); if (c.direct) g.roots.add(c.purl); }
+  for (const c of declared) { node(g, 'maven', c.name, c.version); if (c.direct) g.roots.add(c.purl); }
   return g;
 }
 
@@ -394,15 +403,25 @@ export function javaBomGraph(text) {
   };
   visit(bom.components);
   const listed = new Set();
+  const parents = new Map();
   for (const d of bom.dependencies) {
-    if (!d || typeof d.ref !== 'string') continue;
+    if (!d || typeof d.ref !== 'string') return null;
     listed.add(d.ref);
-    const targets = (Array.isArray(d.dependsOn) ? d.dependsOn : []).map((r) => byRef.get(r)).filter(Boolean);
-    if (d.ref === project) for (const t of targets) g.roots.add(t);
-    else for (const t of targets) edge(g, byRef.get(d.ref), t);
+    // A link from or to something that is not a Maven component of the SBOM: the graph is not whole.
+    if (d.ref !== project && !byRef.has(d.ref)) return null;
+    for (const r of Array.isArray(d.dependsOn) ? d.dependsOn : []) {
+      const t = byRef.get(r);
+      if (!t) return null;
+      parents.set(t, (parents.get(t) ?? 0) + 1);
+      if (d.ref === project) g.roots.add(t); else edge(g, byRef.get(d.ref), t);
+    }
   }
   // Every component must say what it depends on (an empty list is an answer; no entry is not).
   if (!listed.has(project) || [...byRef.keys()].some((r) => !listed.has(r))) return null;
+  // A dependency graph shares components (two libraries on the same logging API…). A tree where nothing
+  // is shared is one where the duplicates were left out: then a library may be used by another one
+  // through a link the file does not show.
+  if (byRef.size >= 10 && ![...parents.values()].some((n) => n >= 2)) return null;
   return g;
 }
 
