@@ -173,7 +173,7 @@ export async function analyseProject(lockPath, root, repo) {
     const u = use.get(purl);
     if (u?.used) {
       const others = (reverse.get(purl) ?? []).filter(mayRun);
-      out.set(purl, { state: 'imported', evidence: u.evidence, project, ...(why ? { alsoLoadedBy: ['(not known)'] } : { alsoLoadedBy: namesOf(g, others) }), ecosystem: g.ecosystem, ...(g.used.has(purl) ? { byTool: true } : {}) });
+      out.set(purl, { state: 'imported', evidence: u.evidence, project, ...(why ? { alsoLoadedBy: ['(not known)'] } : { alsoLoadedBy: namesOf(g, others) }), ecosystem: g.ecosystem, direct: g.roots.has(purl), ...(g.used.has(purl) ? { byTool: true } : {}) });
     }
     else if (fromUsed.has(purl)) {
       const c = chainOf(fromUsed, purl);

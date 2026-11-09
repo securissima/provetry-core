@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Function level for npm and PyPI, from Provetry's vulnerable-functions records (served to customers by
+// Function level for npm, PyPI and Maven (Java), from Provetry's vulnerable-functions records (served to customers by
 // the Provetry service, with their API key) which give, for an advisory, the public functions of the
 // package that lead to the code its fix changed. When the project's own code is the only thing that loads
 // the package and no file of the repository mentions any of those functions, the vulnerable code is not
@@ -33,7 +33,7 @@ const validRecords = (id, records) => (Array.isArray(records) ? records : []).fi
 export async function loadFunctionData(ctx, findings, { baseUrl = DATA_URL, service = null } = {}) {
   const out = new Map();
   if (!baseUrl && !service) return out;
-  const wanted = findings.filter((f) => f.component.type === 'npm' || f.component.type === 'pypi');
+  const wanted = findings.filter((f) => ['npm', 'pypi', 'maven'].includes(f.component.type));
   const ids = [...new Set(wanted.map((f) => f.ids.find((x) => ID.test(x))).filter(Boolean))];
   const byId = new Map();
   const missing = [];
@@ -73,7 +73,8 @@ export async function loadFunctionData(ctx, findings, { baseUrl = DATA_URL, serv
     // Only records of this advisory, made by the method this release knows.
     const records = validRecords(id, byId.get(id));
     const name = f.component.type === 'pypi' ? normalizePypi(f.component.name) : f.component.name;
-    const rec = records.find((r) => (r.ecosystem === 'npm' && f.component.type === 'npm' && r.package === name) || (r.ecosystem === 'PyPI' && f.component.type === 'pypi' && normalizePypi(r.package) === name));
+    const rec = records.find((r) => (r.ecosystem === 'npm' && f.component.type === 'npm' && r.package === name) || (r.ecosystem === 'PyPI' && f.component.type === 'pypi' && normalizePypi(r.package) === name)
+      || (r.ecosystem === 'Maven' && f.component.type === 'maven' && r.package === name));
     if (rec) out.set(`${f.id}|${f.component.purl}`, { ...rec, advisory: id });
   }
   return out;
@@ -108,11 +109,18 @@ export async function packageFunctions(root, findings, components, data) {
     const mm = (v) => String(v).split('.').slice(0, 2).join('.');
     if (mm(rec.version) !== mm(f.component.version)) continue;
     if (!u || u.state !== 'imported' || u.byTool || u.alsoLoadedBy?.length) continue;
+    // Java: libraries find each other at run time (service loaders, provider files, auto-configuration)
+    // without a dependency link; only a direct dependency of the project, from a complete build graph, can
+    // be said to be called by the project's code alone.
+    if (f.component.type === 'maven' && !u.direct) continue;
     const names = rec.entryPoints.filter((n) => !n.startsWith('module:'));
     const modules = rec.entryPoints.filter((n) => n.startsWith('module:')).map((n) => n.slice(7));
     if (names.some((n) => IMPLICIT.has(n) || !/^[A-Za-z_$][\w$]*$/.test(n))) continue;
     // Every file of the project that could name a function: code, configuration, scripts.
-    const sources = await textsOf(f.component.type === 'npm' ? /\.(?:[cm]?[jt]sx?|vue|svelte|astro|json|ya?ml|toml|html?|mdx|sh)$|(?:^|\/)(?:Dockerfile|Makefile)[^/]*$/ : /\.(?:pyi?|ipynb|toml|cfg|ini|ya?ml|json|sh|txt)$|(?:^|\/)(?:Dockerfile|Makefile|Procfile)[^/]*$/);
+    // Java: every JVM language and the configuration that names methods or classes (Spring XML, templates).
+    const sources = await textsOf(f.component.type === 'npm' ? /\.(?:[cm]?[jt]sx?|vue|svelte|astro|json|ya?ml|toml|html?|mdx|sh)$|(?:^|\/)(?:Dockerfile|Makefile)[^/]*$/
+      : f.component.type === 'maven' ? /\.(?:java|kt|kts|groovy|gradle|scala|sc|clj|xml|properties|ya?ml|json|jsp|jspx|tag|ftl|ftlh|vm|html?|sh)$|(?:^|\/)(?:Dockerfile|Makefile)[^/]*$/
+        : /\.(?:pyi?|ipynb|toml|cfg|ini|ya?ml|json|sh|txt)$|(?:^|\/)(?:Dockerfile|Makefile|Procfile)[^/]*$/);
     if (sources == null) continue;
     let hit = null;
     for (const [file, src] of sources) {

@@ -72,3 +72,57 @@ test('profiles: plugin dependencies are not the product; Android flavors', () =>
   const g = parseGradleLock('a:b:1=freeDebugRuntimeClasspath\nc:d:1=freeReleaseRuntimeClasspath');
   assert.deepEqual(g.map((x) => x.scope), ['dev', 'required']);
 });
+
+test('Java, function level: only with the build graph, for a direct dependency nothing else loads', async () => {
+  const { usage } = await import('../src/usage/index.js');
+  const { loadFunctionData, packageFunctions } = await import('../src/usage/functions.js');
+  const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const pom = '<project><groupId>acme</groupId><artifactId>app</artifactId><version>1</version><dependencies>'
+    + '<dependency><groupId>com.github.junrar</groupId><artifactId>junrar</artifactId><version>7.5.0</version></dependency>'
+    + '<dependency><groupId>org.unpack</groupId><artifactId>unpack-all</artifactId><version>1.0</version></dependency>'
+    + '</dependencies></project>';
+  const bom = (withUnpack) => JSON.stringify({
+    bomFormat: 'CycloneDX', specVersion: '1.5', metadata: { component: { 'bom-ref': 'app', purl: 'pkg:maven/acme/app@1' } },
+    components: [
+      { 'bom-ref': 'j', purl: 'pkg:maven/com.github.junrar/junrar@7.5.0?type=jar' },
+      { 'bom-ref': 'u', purl: 'pkg:maven/org.unpack/unpack-all@1.0?type=jar' },
+    ],
+    dependencies: [{ ref: 'app', dependsOn: ['j', 'u'] }, { ref: 'j', dependsOn: [] }, { ref: 'u', dependsOn: withUnpack ? ['j'] : [] }],
+  });
+  const make = (code, { withBom = true, unpackUsesJunrar = false, unpackImported = false } = {}) => {
+    const dir = mkdtempSync(`${tmpdir()}/provetry-java-fn-`);
+    writeFileSync(`${dir}/pom.xml`, pom);
+    if (withBom) { mkdirSync(`${dir}/target`); writeFileSync(`${dir}/target/bom.json`, bom(unpackUsesJunrar)); }
+    mkdirSync(`${dir}/src/main/java/acme`, { recursive: true });
+    writeFileSync(`${dir}/src/main/java/acme/App.java`, `package acme;\nimport com.github.junrar.Archive;\n${unpackImported ? 'import org.unpack.Unpacker;\n' : ''}class App {\n${code}\n}\n`);
+    return dir;
+  };
+  const record = { id: 'GHSA-89m4-43j5-vhhx', ecosystem: 'Maven', package: 'com.github.junrar:junrar', version: '7.5.0', entryPoints: ['extract'], methods: [], whole: false, method: 'provetry-vulnerable-functions/2 (fix diff + name graph)' };
+  const ctx = { fetchJson: async () => ({ status: 200, json: [record] }) };
+  const finding = { id: 'GHSA-89m4-43j5-vhhx', ids: ['GHSA-89m4-43j5-vhhx'], component: { type: 'maven', name: 'com.github.junrar:junrar', version: '7.5.0', purl: 'pkg:maven/com.github.junrar/junrar@7.5.0' } };
+  const data = await loadFunctionData(ctx, [finding], { baseUrl: 'https://example.test/data' });
+  assert.equal(data.size, 1, 'a Maven record is read');
+  const key = `${finding.id}|${finding.component.purl}`;
+  const run = async (code, opts) => { const dir = make(code, opts); const u = await usage(dir); return { r: await packageFunctions(dir, [finding], u.components, data), u: u.components.get(finding.component.purl) }; };
+
+  let { r, u } = await run('void go() { new Archive(null); }');
+  assert.equal(u.state, 'imported');
+  assert.equal(u.direct, true);
+  assert.equal(r.get(key).result, 'not_mentioned', 'the build graph says nothing else loads it, and the code never names extract');
+  ({ r } = await run('void go() { Junrar.extract("a.rar", "out"); }'));
+  assert.equal(r.get(key).result, 'mentioned');
+  assert.equal(r.get(key).line, 4);
+  ({ r } = await run('void go() { }', { withBom: false }));
+  assert.equal(r.has(key), false, 'no build graph: no conclusion');
+  ({ r } = await run('void go() { }', { unpackUsesJunrar: true, unpackImported: true }));
+  assert.equal(r.has(key), false, 'another library the code loads depends on it: no conclusion');
+});
+
+test('Java build graph: refused when a component does not list its dependencies', async () => {
+  const { javaBomGraph } = await import('../src/usage/graph.js');
+  const ok = { bomFormat: 'CycloneDX', metadata: { component: { 'bom-ref': 'p' } }, components: [{ 'bom-ref': 'a', purl: 'pkg:maven/g/a@1' }], dependencies: [{ ref: 'p', dependsOn: ['a'] }, { ref: 'a', dependsOn: [] }] };
+  assert.ok(javaBomGraph(JSON.stringify(ok)));
+  assert.equal(javaBomGraph(JSON.stringify({ ...ok, dependencies: [{ ref: 'p', dependsOn: ['a'] }] })), null);
+  assert.equal(javaBomGraph('not json'), null);
+});
