@@ -13,6 +13,7 @@ import { reach, goModules, mergeReach, fromUsage } from './reach.js';
 import { usage } from './usage/index.js';
 import { rustFunctions } from './usage/rust.js';
 import { loadFunctionData, packageFunctions } from './usage/functions.js';
+import { confirmCalls } from './usage/calls.js';
 import { endOfLife } from './vuln/eol.js';
 import { verifyChain, verifyTimestamps, readCertificates, lateCoverage } from './journal.js';
 import { toText, toMarkdown, toJson, toSarif, clockText } from './report.js';
@@ -59,6 +60,8 @@ reach options
   --offline, --no-cache     as for scan (the import analysis looks the vulnerabilities up)
   --provetry-url <url>      with PROVETRY_API_KEY: the Provetry service gives the vulnerable functions of
                             npm and PyPI advisories (function level for those)
+  --no-calls                npm: skip the call analysis (Jelly, run with npx; PROVETRY_JELLY: the path
+                            of a local jelly.js) that confirms where a named function is really called
 
 eol options
   --support-until <date>    end of your product's support period (YYYY-MM-DD): flags earlier ends
@@ -220,7 +223,7 @@ export async function main(argv) {
     const { values, positionals } = parseArgs({
       args: rest,
       allowPositionals: true,
-      options: { out: { type: 'string' }, product: { type: 'string' }, govulncheck: { type: 'string', default: 'govulncheck' }, 'no-imports': { type: 'boolean', default: false }, gate: { type: 'string' }, 'provetry-url': { type: 'string' }, offline: { type: 'boolean', default: false }, 'no-cache': { type: 'boolean', default: false } },
+      options: { out: { type: 'string' }, product: { type: 'string' }, govulncheck: { type: 'string', default: 'govulncheck' }, 'no-imports': { type: 'boolean', default: false }, gate: { type: 'string' }, 'provetry-url': { type: 'string' }, offline: { type: 'boolean', default: false }, 'no-cache': { type: 'boolean', default: false }, 'no-calls': { type: 'boolean', default: false } },
     });
     if (values.offline && values['no-cache']) fail('--offline needs the cache');
     // The API key only ever goes to an https address (or this machine, for tests).
@@ -278,7 +281,14 @@ export async function main(argv) {
         // The records come from the Provetry service, for its customers (PROVETRY_API_KEY, --provetry-url).
         const key = apiKey;
         const service = key && serviceUrl ? { url: serviceUrl, key } : null;
-        for (const [k, v] of await packageFunctions(dir, all, u.components, await loadFunctionData(ctx, all, { service }))) functions.set(k, v);
+        const records = await loadFunctionData(ctx, all, { service });
+        for (const [k, v] of await packageFunctions(dir, all, u.components, records)) functions.set(k, v);
+        // Where a function is named, a call analysis looks for the call itself (evidence added, never removed).
+        try {
+          await confirmCalls(dir, all, functions, records, { jelly: !values['no-calls'] && (!values.offline || Boolean(process.env.PROVETRY_JELLY)) });
+        } catch (e) {
+          process.stderr.write(`provetry: note: the call analysis did not run (${clean(String(e?.message ?? e))}); the mentions stay as they are\n`);
+        }
         const statements = fromUsage(all, u.components, { functions });
         lists.push(statements);
         tools.push('import analysis');

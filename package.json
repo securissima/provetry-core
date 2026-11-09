@@ -41,6 +41,7 @@
     "node": ">=22"
   },
   "devDependencies": {
+    "@cs-au-dk/jelly": "0.13.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1"
   }
