@@ -161,13 +161,13 @@ test('Java function level: no conclusion with annotation processors, vendored ja
   const { tmpdir } = await import('node:os');
   const make = (extra = {}) => {
     const dir = mkdtempSync(`${tmpdir()}/provetry-java-blind-`);
-    writeFileSync(`${dir}/pom.xml`, '<project><groupId>acme</groupId><artifactId>app</artifactId><version>1</version><dependencies><dependency><groupId>com.github.junrar</groupId><artifactId>junrar</artifactId><version>7.5.0</version></dependency></dependencies></project>');
+    writeFileSync(`${dir}/pom.xml`, `<project><groupId>acme</groupId><artifactId>app</artifactId><version>1</version><dependencies><dependency><groupId>com.github.junrar</groupId><artifactId>junrar</artifactId><version>7.5.0</version></dependency></dependencies>${extra.pom ?? ''}</project>`);
     mkdirSync(`${dir}/target`);
     const comps = [{ 'bom-ref': 'j', purl: 'pkg:maven/com.github.junrar/junrar@7.5.0' }];
     writeFileSync(`${dir}/target/bom.json`, JSON.stringify({ bomFormat: 'CycloneDX', metadata: { component: { 'bom-ref': 'app' } }, components: comps, dependencies: [{ ref: 'app', dependsOn: ['j'] }, { ref: 'j', dependsOn: [] }] }));
     mkdirSync(`${dir}/src/main/java/acme`, { recursive: true });
     writeFileSync(`${dir}/src/main/java/acme/App.java`, `package acme;\nimport com.github.junrar.Archive;\n${extra.imports ?? ''}class App { void go() { new Archive(null); } }\n`);
-    for (const [p, t] of Object.entries(extra.files ?? {})) writeFileSync(`${dir}/${p}`, t);
+    for (const [p, t] of Object.entries(extra.files ?? {})) { mkdirSync(`${dir}/${p}`.replace(/\/[^/]*$/, ''), { recursive: true }); writeFileSync(`${dir}/${p}`, t); }
     return dir;
   };
   const finding = { id: 'GHSA-89m4-43j5-vhhx', ids: ['GHSA-89m4-43j5-vhhx'], component: { type: 'maven', name: 'com.github.junrar:junrar', version: '7.5.0', purl: 'pkg:maven/com.github.junrar/junrar@7.5.0' } };
@@ -178,4 +178,9 @@ test('Java function level: no conclusion with annotation processors, vendored ja
   assert.equal((await run({ imports: 'import lombok.extern.slf4j.Slf4j;\n' })).has(key), false, 'Lombok writes calls the sources do not show');
   assert.equal((await run({ files: { 'vendor.jar': 'x' } })).has(key), false, 'a jar kept in the repository');
   assert.equal((await run({}, ['plus'])).has(key), false, 'an operator name');
+  assert.equal((await run({ files: { '.mvn/wrapper/maven-wrapper.jar': 'x', 'target/app-1.jar': 'x' } })).get(key).result, 'not_mentioned', 'the wrapper and the build output are not code of the project');
+  const gen = '<build><plugins><plugin><groupId>org.openapitools</groupId><artifactId>openapi-generator-maven-plugin</artifactId></plugin></plugins></build>';
+  assert.equal((await run({ pom: gen })).has(key), false, 'generated code not generated yet');
+  assert.equal((await run({ pom: gen, files: { 'target/generated-sources/openapi/Api.java': 'class Api { void a() { } }' } })).get(key).result, 'not_mentioned', 'generated code present: read');
+  assert.equal((await run({ pom: gen, files: { 'target/generated-sources/openapi/Api.java': 'class Api { void a() { extract(); } }' } })).get(key).result, 'mentioned', 'generated code that calls the function');
 });

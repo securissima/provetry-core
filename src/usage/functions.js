@@ -96,11 +96,16 @@ export async function packageFunctions(root, findings, components, data) {
   let blind;
   const javaBlind = async () => {
     if (blind !== undefined) return blind;
-    blind = files.some((x) => /\.jar$|(?:^|\/)lombok\.config$/.test(x));
+    // A jar in the project (not the build tool's wrapper, not the build's own output): code this cannot read.
+    blind = files.some((x) => (/\.jar$/.test(x) && !/(?:^|\/)(?:\.mvn\/wrapper|gradle\/wrapper|target|build|out)\//.test(x)) || /(?:^|\/)lombok\.config$/.test(x));
+    // Code generated at build time (OpenAPI, protobuf, JAXB, jOOQ…) can call the library; it is read only
+    // when the build has already generated it.
+    const generated = files.some((x) => /(?:^|\/)(?:target\/generated-sources|build\/generated(?:-src)?)\//.test(x));
     for (const x of files.filter((y) => /\.(?:java|kt|gradle|kts)$|(?:^|\/)pom\.xml$/.test(y))) {
       if (blind) break;
       const t = await readText(root, x);
       if (t == null || /\bimport\s+(?:lombok|org\.mapstruct|dagger|org\.immutables|com\.google\.auto\.value|io\.micronaut\.)|<scope>\s*system\s*<\/scope>|\bfiles\s*\(|annotationProcessor\b|\bkapt\b|\bksp\b|<annotationProcessorPaths>/.test(t)) blind = true;
+      else if (!generated && /\.gradle|\.kts$|pom\.xml$/.test(x) && /openapi-generator|swagger-codegen|protobuf|protoc|jaxb|xjc|cxf-codegen|wsimport|jaxws|jooq|avro|antlr|thrift|wsdl2java|graphql-codegen|querydsl|generate-sources/i.test(t)) blind = true;
     }
     return blind;
   };
