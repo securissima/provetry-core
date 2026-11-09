@@ -352,12 +352,76 @@ export function nugetGraph(text) {
   return g;
 }
 
-// ---------- Java: no edges (Gradle lock files and pom.xml do not give them): evidence of use only ----------
+// ---------- Java ----------
+// Gradle lock files and pom.xml give no edges: evidence of use only. The CycloneDX SBOM the build writes
+// (cyclonedx-maven-plugin, the CycloneDX Gradle plugin) gives the whole graph of the build: when it is
+// there, next to the build file, and lists the dependencies of every component, it is the graph.
+export const JAVA_BUILD_BOMS = ['target/bom.json', 'target/classes/META-INF/sbom/application.cdx.json', 'build/reports/bom.json', 'build/reports/cyclonedx/bom.json', 'build/reports/application.cdx.json', 'build/reports/cyclonedx/application.cdx.json'];
+
 export async function javaGraph(path) {
   const { readLockFile } = await import('../lockfiles/index.js');
+  const declared = await readLockFile(path);
+  const { stat } = await import('node:fs/promises');
+  const built = (await stat(path)).mtimeMs;
+  for (const rel of JAVA_BUILD_BOMS) {
+    const file = `${dirname(path)}/${rel}`;
+    let text = null;
+    try {
+      // Older than the build file: a leftover of another build, not this one's graph.
+      if ((await stat(file)).mtimeMs < built) continue;
+      text = await readFile(file, 'utf8');
+    } catch { continue; }
+    const g = javaBomGraph(text);
+    // Every component the build file declares must be in it (the same build, the same configuration).
+    if (g && declared.every((c) => [...g.nodes.values()].some((n) => n.name === c.name))) return g;
+  }
   const g = graph('maven');
   g.complete = false;
-  for (const c of await readLockFile(path)) { node(g, 'maven', c.name, c.version); if (c.direct) g.roots.add(c.purl); }
+  for (const c of declared) { node(g, 'maven', c.name, c.version); if (c.direct) g.roots.add(c.purl); }
+  return g;
+}
+
+/**
+ * The graph of a Java build from its CycloneDX SBOM: the project's direct dependencies are the roots.
+ * Null when the SBOM does not give a usable graph (not CycloneDX, no project, a component whose
+ * dependencies are not listed): then nothing is concluded from it.
+ */
+export function javaBomGraph(text) {
+  let bom;
+  try { bom = JSON.parse(text); } catch { return null; }
+  if (bom?.bomFormat !== 'CycloneDX' || !Array.isArray(bom.dependencies)) return null;
+  const project = bom.metadata?.component?.['bom-ref'];
+  if (!project) return null;
+  const g = graph('maven');
+  const byRef = new Map();
+  const visit = (list) => {
+    for (const c of Array.isArray(list) ? list : []) {
+      const m = /^pkg:maven\/([^/@?#]+)\/([^/@?#]+)@([^?#]+)/.exec(String(c?.purl ?? ''));
+      if (m && c['bom-ref']) byRef.set(c['bom-ref'], node(g, 'maven', `${decodeURIComponent(m[1])}:${decodeURIComponent(m[2])}`, decodeURIComponent(m[3])));
+      visit(c?.components);
+    }
+  };
+  visit(bom.components);
+  const listed = new Set();
+  const parents = new Map();
+  for (const d of bom.dependencies) {
+    if (!d || typeof d.ref !== 'string') return null;
+    listed.add(d.ref);
+    // A link from or to something that is not a Maven component of the SBOM: the graph is not whole.
+    if (d.ref !== project && !byRef.has(d.ref)) return null;
+    for (const r of Array.isArray(d.dependsOn) ? d.dependsOn : []) {
+      const t = byRef.get(r);
+      if (!t) return null;
+      parents.set(t, (parents.get(t) ?? 0) + 1);
+      if (d.ref === project) g.roots.add(t); else edge(g, byRef.get(d.ref), t);
+    }
+  }
+  // Every component must say what it depends on (an empty list is an answer; no entry is not).
+  if (!listed.has(project) || [...byRef.keys()].some((r) => !listed.has(r))) return null;
+  // A dependency graph shares components (two libraries on the same logging API…). A tree where nothing
+  // is shared is one where the duplicates were left out: then a library may be used by another one
+  // through a link the file does not show.
+  if (byRef.size >= 10 && ![...parents.values()].some((n) => n >= 2)) return null;
   return g;
 }
 

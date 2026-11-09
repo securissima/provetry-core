@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Function level for npm and PyPI, from Provetry's vulnerable-functions records (served to customers by
+// Function level for npm, PyPI and Maven (Java), from Provetry's vulnerable-functions records (served to customers by
 // the Provetry service, with their API key) which give, for an advisory, the public functions of the
 // package that lead to the code its fix changed. When the project's own code is the only thing that loads
 // the package and no file of the repository mentions any of those functions, the vulnerable code is not
@@ -14,11 +14,13 @@ import { normalizePypi } from '../purl.js';
 // to the data repository cannot change what a release concludes. Null: not published yet, nothing is read.
 export const DATA_REF = null;
 export const DATA_URL = DATA_REF ? `https://raw.githubusercontent.com/Enigmacker/provetry-vulnerable-functions/${DATA_REF}/data` : null;
-const METHOD = /^provetry-vulnerable-functions\/2 \(/;
+const METHOD = /^provetry-vulnerable-functions\/[23] \(/;
 const MAX_AGE = 24 * 3600;
 const ID = /^GHSA(?:-[23456789cfghjmpqrvwx]{4}){3}$/;
 
 // Called without their name in the code that uses them: no conclusion when one is an entry point.
+// Called by Kotlin, Groovy and Scala syntax (operators, indexing, destructuring, delegation), not by name.
+const JVM_OPERATORS = new Set(['plus', 'minus', 'times', 'div', 'rem', 'mod', 'contains', 'rangeTo', 'rangeUntil', 'not', 'unaryMinus', 'unaryPlus', 'inc', 'dec', 'plusAssign', 'minusAssign', 'timesAssign', 'divAssign', 'remAssign', 'component1', 'component2', 'component3', 'component4', 'component5', 'getValue', 'setValue', 'provideDelegate', 'invoke', 'iterator', 'getAt', 'putAt', 'leftShift', 'rightShift', 'multiply', 'power', 'isCase', 'asType', 'asBoolean', 'previous', 'negative', 'positive', 'bitwiseNegate', 'or', 'and', 'xor', 'call', 'update', 'unapply', 'unapplySeq', 'foreach', 'map', 'flatMap', 'withFilter', 'filter', 'apply']);
 const IMPLICIT = new Set(['toString', 'valueOf', 'toJSON', 'then', 'catch', 'finally', 'next', 'get', 'set', 'has', 'apply', 'call', 'bind', 'default', 'constructor', 'handler', 'main', 'run', 'init', 'setup', 'register', 'middleware', 'plugin', 'install']);
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -33,7 +35,7 @@ const validRecords = (id, records) => (Array.isArray(records) ? records : []).fi
 export async function loadFunctionData(ctx, findings, { baseUrl = DATA_URL, service = null } = {}) {
   const out = new Map();
   if (!baseUrl && !service) return out;
-  const wanted = findings.filter((f) => f.component.type === 'npm' || f.component.type === 'pypi');
+  const wanted = findings.filter((f) => ['npm', 'pypi', 'maven'].includes(f.component.type));
   const ids = [...new Set(wanted.map((f) => f.ids.find((x) => ID.test(x))).filter(Boolean))];
   const byId = new Map();
   const missing = [];
@@ -73,7 +75,8 @@ export async function loadFunctionData(ctx, findings, { baseUrl = DATA_URL, serv
     // Only records of this advisory, made by the method this release knows.
     const records = validRecords(id, byId.get(id));
     const name = f.component.type === 'pypi' ? normalizePypi(f.component.name) : f.component.name;
-    const rec = records.find((r) => (r.ecosystem === 'npm' && f.component.type === 'npm' && r.package === name) || (r.ecosystem === 'PyPI' && f.component.type === 'pypi' && normalizePypi(r.package) === name));
+    const rec = records.find((r) => (r.ecosystem === 'npm' && f.component.type === 'npm' && r.package === name) || (r.ecosystem === 'PyPI' && f.component.type === 'pypi' && normalizePypi(r.package) === name)
+      || (r.ecosystem === 'Maven' && f.component.type === 'maven' && r.package === name));
     if (rec) out.set(`${f.id}|${f.component.purl}`, { ...rec, advisory: id });
   }
   return out;
@@ -90,6 +93,22 @@ export async function packageFunctions(root, findings, components, data) {
   const { files, incomplete } = await projectFiles(root);
   if (incomplete) return out;
   const texts = new Map();
+  let blind;
+  const javaBlind = async () => {
+    if (blind !== undefined) return blind;
+    // A jar in the project (not the build tool's wrapper, not the build's own output): code this cannot read.
+    blind = files.some((x) => (/\.jar$/.test(x) && !/(?:^|\/)(?:\.mvn\/wrapper|gradle\/wrapper|target|build|out)\//.test(x)) || /(?:^|\/)lombok\.config$/.test(x));
+    // Code generated at build time (OpenAPI, protobuf, JAXB, jOOQ…) can call the library; it is read only
+    // when the build has already generated it.
+    const generated = files.some((x) => /(?:^|\/)(?:target\/generated-sources|build\/generated(?:-src)?)\//.test(x));
+    for (const x of files.filter((y) => /\.(?:java|kt|gradle|kts)$|(?:^|\/)pom\.xml$/.test(y))) {
+      if (blind) break;
+      const t = await readText(root, x);
+      if (t == null || /\bimport\s+(?:lombok|org\.mapstruct|dagger|org\.immutables|com\.google\.auto\.value|io\.micronaut\.)|<scope>\s*system\s*<\/scope>|\bfiles\s*\(|annotationProcessor\b|\bkapt\b|\bksp\b|<annotationProcessorPaths>/.test(t)) blind = true;
+      else if (!generated && /\.gradle|\.kts$|pom\.xml$/.test(x) && /openapi-generator|swagger-codegen|protobuf|protoc|jaxb|xjc|cxf-codegen|wsimport|jaxws|jooq|avro|antlr|thrift|wsdl2java|graphql-codegen|querydsl|generate-sources/i.test(t)) blind = true;
+    }
+    return blind;
+  };
   const textsOf = async (re) => {
     const list = [];
     for (const f of files) {
@@ -108,11 +127,22 @@ export async function packageFunctions(root, findings, components, data) {
     const mm = (v) => String(v).split('.').slice(0, 2).join('.');
     if (mm(rec.version) !== mm(f.component.version)) continue;
     if (!u || u.state !== 'imported' || u.byTool || u.alsoLoadedBy?.length) continue;
+    // Java: libraries find each other at run time (service loaders, provider files, auto-configuration)
+    // without a dependency link; only a direct dependency of the project, from a complete build graph, can
+    // be said to be called by the project's code alone.
+    if (f.component.type === 'maven' && !u.direct) continue;
+    // Java: code that calls the library without its name in the repository: generated by annotation
+    // processors (Lombok, MapStruct, Dagger, Immutables), or in jars kept in the repository.
+    if (f.component.type === 'maven' && (await javaBlind()) ) continue;
     const names = rec.entryPoints.filter((n) => !n.startsWith('module:'));
     const modules = rec.entryPoints.filter((n) => n.startsWith('module:')).map((n) => n.slice(7));
     if (names.some((n) => IMPLICIT.has(n) || !/^[A-Za-z_$][\w$]*$/.test(n))) continue;
+    if (f.component.type === 'maven' && names.some((n) => JVM_OPERATORS.has(n))) continue;
     // Every file of the project that could name a function: code, configuration, scripts.
-    const sources = await textsOf(f.component.type === 'npm' ? /\.(?:[cm]?[jt]sx?|vue|svelte|astro|json|ya?ml|toml|html?|mdx|sh)$|(?:^|\/)(?:Dockerfile|Makefile)[^/]*$/ : /\.(?:pyi?|ipynb|toml|cfg|ini|ya?ml|json|sh|txt)$|(?:^|\/)(?:Dockerfile|Makefile|Procfile)[^/]*$/);
+    // Java: every JVM language and the configuration that names methods or classes (Spring XML, templates).
+    const sources = await textsOf(f.component.type === 'npm' ? /\.(?:[cm]?[jt]sx?|vue|svelte|astro|json|ya?ml|toml|html?|mdx|sh)$|(?:^|\/)(?:Dockerfile|Makefile)[^/]*$/
+      : f.component.type === 'maven' ? /\.(?:java|kt|kts|groovy|gradle|scala|sc|clj|cljs|cljc|edn|xml|xhtml|properties|ya?ml|json|conf|jsp|jspx|jspf|tag|tagx|tld|xsl|xslt|ftl|ftlh|vm|vtl|mustache|hbs|peb|drl|bpmn|html?|sh)$|(?:^|\/)(?:Dockerfile|Makefile)[^/]*$/
+        : /\.(?:pyi?|ipynb|toml|cfg|ini|ya?ml|json|sh|txt)$|(?:^|\/)(?:Dockerfile|Makefile|Procfile)[^/]*$/);
     if (sources == null) continue;
     let hit = null;
     for (const [file, src] of sources) {
