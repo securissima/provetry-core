@@ -13,6 +13,9 @@ export { loadFunctionData, packageFunctions, DATA_URL } from './usage/functions.
 export { toText, toMarkdown, toJson, toSarif } from './report.js';
 export { cvss3Score } from './vuln/cvss.js';
 export { loadEpss, epssOf, EPSS_LIKELY } from './vuln/epss.js';
+// The exploited-vulnerability catalogues, for a watch that rereads them more often than the scans do.
+export { loadKev, KEV_URL } from './vuln/kev.js';
+export { loadEuvdExploited, EUVD_API } from './vuln/euvd.js';
 export { endOfLife, cycleOf, purlBase } from './vuln/eol.js';
 export { memoryCache, fileCache } from './cache.js';
 export { fetchJson } from './net.js';

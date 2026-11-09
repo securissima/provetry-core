@@ -213,3 +213,11 @@ test('scan: EPSS down is only a missing ranking aid, the scan stays complete', a
   const off = await scan(ctxOf(), components, { epss: false });
   assert.ok(!off.sources.some((s) => s.name === 'FIRST EPSS'));
 });
+
+test('the exploited-vulnerability catalogues are exported', async () => {
+  const core = await import('../src/index.js');
+  assert.equal(typeof core.loadKev, 'function');
+  assert.equal(typeof core.loadEuvdExploited, 'function');
+  const kev = await core.loadKev(ctxOf());
+  assert.ok(kev instanceof Map && kev.size > 0);
+});
