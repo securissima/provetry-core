@@ -219,8 +219,8 @@ export function fromUsage(findings, found, { version = TOOL.version, functions =
       const fn = functions.get(`${f.id}|${c.purl}`);
       const k = fn.called;
       out.push({ vulnerability, purl: c.purl, status: 'under_investigation',
-        status_notes: `${by}: ${c.name} is imported, and the call analysis (${k.by}) finds a call of ${c.name}'s ${k.name} at ${k.file}:${k.line}, ${fn.source ? `a function that leads to the fixed code (${fn.source})` : 'an affected function the advisory names'}. The vulnerable code is likely reached through this call: check it first.`,
-        evidence: { state: 'called', file: k.file, line: k.line, function: k.name } });
+        status_notes: `${by}: ${c.name} is imported, and the call analysis (${k.by}) finds a call of ${c.name}'s ${k.name} at ${k.file}:${k.line}, ${fn.source ? `a function that leads to the fixed code (${fn.source})` : 'an affected function the advisory names'}. The vulnerable code may be reached through this call: check it first.`,
+        evidence: { state: 'called', file: k.file, line: k.line, function: k.name, mentioned: { file: fn.file, line: fn.line } } });
     } else if (functions.get(`${f.id}|${c.purl}`)?.result === 'mentioned') {
       const fn = functions.get(`${f.id}|${c.purl}`);
       out.push({ vulnerability, purl: c.purl, status: 'under_investigation',

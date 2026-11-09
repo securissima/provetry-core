@@ -284,7 +284,11 @@ export async function main(argv) {
         const records = await loadFunctionData(ctx, all, { service });
         for (const [k, v] of await packageFunctions(dir, all, u.components, records)) functions.set(k, v);
         // Where a function is named, a call analysis looks for the call itself (evidence added, never removed).
-        await confirmCalls(dir, all, functions, records, { jelly: !values['no-calls'] && (!values.offline || Boolean(process.env.PROVETRY_JELLY)) });
+        try {
+          await confirmCalls(dir, all, functions, records, { jelly: !values['no-calls'] && (!values.offline || Boolean(process.env.PROVETRY_JELLY)) });
+        } catch (e) {
+          process.stderr.write(`provetry: note: the call analysis did not run (${clean(String(e?.message ?? e))}); the mentions stay as they are\n`);
+        }
         const statements = fromUsage(all, u.components, { functions });
         lists.push(statements);
         tools.push('import analysis');

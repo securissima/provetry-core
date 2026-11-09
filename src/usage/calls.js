@@ -12,6 +12,7 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, isAbsolute } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { projectFiles, readText, PYPI_MODULES } from './imports.js';
 import { normalizePypi } from '../purl.js';
 
@@ -19,10 +20,24 @@ export const JELLY = '@cs-au-dk/jelly@0.13.0';
 const NAME = /^[A-Za-z_$][\w$]*$/;
 const PKG = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i;
 
+// The child gets no secret of the pipeline (the Provetry API key, tokens…), and keeps the Node options
+// a CI may need (certificates).
+const SECRET = /KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH/i;
+function childEnv() {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !SECRET.test(k)));
+  env.NODE_OPTIONS = [process.env.NODE_OPTIONS, '--max-old-space-size=4096'].filter(Boolean).join(' ');
+  return env;
+}
+
 function run(cmd, args, { cwd, timeout }) {
   return new Promise((done) => {
-    execFile(cmd, args, { cwd, timeout, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=4096' } }, (error, stdout, stderr) => done({ error, stdout, stderr }));
+    execFile(cmd, args, { cwd, timeout, maxBuffer: 64 * 1024 * 1024, env: childEnv() }, (error, stdout, stderr) => done({ error, stdout, stderr }));
   });
+}
+
+/** Jelly from Provetry's own install, when it is there. */
+function ownJelly() {
+  try { return fileURLToPath(import.meta.resolve('@cs-au-dk/jelly/lib/main.js')); } catch { return null; }
 }
 
 /** The narrowest place of a Jelly match ("file:l1:c1:l2:c2"): the call itself, not its enclosing function. */
@@ -40,18 +55,22 @@ export function narrowest(locs, root) {
   return best && { file: best.file, line: best.line };
 }
 
-/** The Jelly patterns of one finding: a call of one of the names, from the package or one of its modules. */
+/**
+ * The Jelly pattern of one finding: a call of one of the names, read directly on the package or one of its
+ * modules. Not deeper (no "**"): a method of the same name on what the package returns or creates is
+ * another function.
+ */
 export function jellyPattern(pkg, names) {
   if (!PKG.test(pkg) || !names.length || !names.every((n) => NAME.test(n))) return null;
   const props = names.length === 1 ? names[0] : `{${names.join(',')}}`;
-  return `call {<${pkg}>,<${pkg}/**>}**.${props}`;
+  return `call {<${pkg}>,<${pkg}/**>}.${props}`;
 }
 
 /**
  * npm: { key → { file, line, name } } for the findings whose function Jelly sees called.
  * items: [{ key, pkg, names }]. Any failure (no npx, no network, a timeout): an empty map.
  */
-export async function jellyCalls(root, items, { timeout = 300_000, jelly = process.env.PROVETRY_JELLY } = {}) {
+export async function jellyCalls(root, items, { timeout = 300_000, jelly = process.env.PROVETRY_JELLY ? resolve(process.env.PROVETRY_JELLY) : ownJelly() } = {}) {
   const out = new Map();
   const vulns = [];
   const byId = new Map();
@@ -68,8 +87,10 @@ export async function jellyCalls(root, items, { timeout = 300_000, jelly = proce
   try {
     await writeFile(join(dir, 'v.json'), JSON.stringify(vulns));
     const args = ['-i', String(Math.floor(timeout / 1000) - 10), '--ignore-dependencies', '--vulnerabilities', join(dir, 'v.json'), '--matches-file', join(dir, 'm.json'), '-b', resolve(root), resolve(root)];
-    const r = jelly ? await run(process.execPath, [jelly, ...args], { cwd: root, timeout })
-      : await run(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['--yes', JELLY, ...args], { cwd: root, timeout });
+    // From a folder of its own: the repository's .npmrc, package.json or node_modules must not decide what
+    // npx fetches or runs.
+    const r = jelly ? await run(process.execPath, [jelly, ...args], { cwd: dir, timeout })
+      : await run(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['--yes', JELLY, ...args], { cwd: dir, timeout });
     if (r.error) return out;
     let matches;
     try { matches = JSON.parse(await readFile(join(dir, 'm.json'), 'utf8')); } catch { return out; }
@@ -101,13 +122,17 @@ export function pyCall(src, modules, names) {
   const text = blankPy(src).replace(/\\\n/g, '  ');
   const lines = text.split('\n');
   const isMod = (m) => modules.some((x) => m === x || m.startsWith(`${x}.`));
-  const fnAlias = new Map(); // local name → function name
-  const modAlias = new Set(); // local names of a module of the package
-  const importLines = new Set();
+  // Statements in parentheses on one line (same length: positions stay where they are).
   const flat = text.replace(/\(([^()]*)\)/g, (m, inner) => `(${inner.replace(/\n/g, ' ')})`);
+  const fnAlias = new Map(); // local name → function name
+  const modPath = new Map(); // how the code writes a module of the package (yaml, yaml.composer, y) → the name it binds
+  const importLines = new Set();
+  const own = [...flat];
+  const blank = (start, end) => { for (let i = start; i < end; i++) if (own[i] !== '\n') own[i] = ' '; };
   for (const m of flat.matchAll(/^[ \t]*from[ \t]+([\w.]+)[ \t]+import[ \t]+\(?([^)\n]*)\)?/gm)) {
     if (!isMod(m[1])) continue;
     importLines.add(text.slice(0, m.index).split('\n').length);
+    blank(m.index, m.index + m[0].length);
     for (const w of words(m[2])) {
       const [n, , as] = w.split(/\s+/);
       if (n === '*') return null; // every name of the module: whose is whose is not known here
@@ -116,23 +141,39 @@ export function pyCall(src, modules, names) {
     }
   }
   for (const m of text.matchAll(/^[ \t]*import[ \t]+([^\n;]+)/gm)) {
+    let ours = false;
     for (const w of words(m[1])) {
       const [mod, , as] = w.split(/\s+/);
       if (!isMod(mod)) continue;
-      importLines.add(text.slice(0, m.index).split('\n').length);
-      modAlias.add(as ?? mod.split('.')[0]);
+      ours = true;
+      // import a.b.c binds a; the call must then go through the whole path (a.b is not the package).
+      modPath.set(as ?? mod, as ?? mod.split('.')[0]);
     }
+    if (ours) { importLines.add(text.slice(0, m.index).split('\n').length); blank(m.index, m.index + m[0].length); }
   }
-  const rebound = (local) => new RegExp(`^[ \\t]*(?:(?:async[ \\t]+)?def|class)[ \\t]+${local}\\b|^[ \\t]*(?:[\\w.,\\s]*,[ \\t]*)?${local}[ \\t]*(?:,[^=\\n]*)?(?<![=!<>])=(?!=)|\\bfor[ \\t]+(?:[\\w,\\s]*,[ \\t]*)?${local}\\b[^\\n]*\\bin\\b|\\bas[ \\t]+${local}\\b|\\bglobal[ \\t]+[^\\n]*\\b${local}\\b|\\blambda\\b[^:\\n]*\\b${local}\\b|\\bdef[ \\t]+\\w+[ \\t]*\\([^)]*\\b${local}\\b`, 'm');
-  const live = (local) => {
-    const own = lines.filter((_, i) => !importLines.has(i + 1)).join('\n');
-    return !rebound(local).test(own);
-  };
+  const ownText = own.join('');
+  const L = (n) => n.replace(/\./g, '\\.');
+  // Bound again anywhere in the file: def, class, assignment (plain, annotated, augmented, walrus), for,
+  // with/except … as, global, lambda or function parameter, match … case, or an import from elsewhere.
+  const rebound = (local) => new RegExp([
+    `^[ \\t]*(?:(?:async[ \\t]+)?def|class)[ \\t]+${local}\\b`,
+    `^[ \\t]*(?:[\\w.,\\s*]*,[ \\t]*)?\\*?${local}[ \\t]*(?:,[^=\\n]*)?(?:[-+*/%&|^@]|\\*\\*|//|>>|<<)?=(?!=)`,
+    `^[ \\t]*${local}[ \\t]*:(?!=)`,
+    `(?<![\\w.])${local}[ \\t]*:=`,
+    `\\bfor[ \\t]+[^\\n]*?(?<![\\w.])${local}\\b[^\\n]*\\bin\\b`,
+    `\\bas[ \\t]+${local}\\b`,
+    `\\bglobal[ \\t]+[^\\n]*\\b${local}\\b`,
+    `\\blambda\\b[^:\\n]*\\b${local}\\b`,
+    `\\bdef[ \\t]+\\w+[ \\t]*\\([^)]*\\b${local}\\b`,
+    `^[ \\t]*case\\b[^\\n]*(?<![\\w.])${local}\\b`,
+    `^[ \\t]*(?:from[ \\t]+\\S+[ \\t]+)?import[ \\t][^\\n]*(?<![\\w.])${local}\\b`,
+  ].join('|'), 'm');
+  const live = (local) => !rebound(local).test(ownText);
   const calls = [];
   for (const [local, fn] of fnAlias) if (live(local)) calls.push([new RegExp(`(?<![\\w.])${local}[ \\t]*\\(`), fn]);
-  for (const local of modAlias) {
+  for (const [path, local] of modPath) {
     if (!live(local)) continue;
-    for (const fn of names) calls.push([new RegExp(`(?<![\\w.])${local.replace(/\./g, '\\.')}(?:[ \\t]*\\.[ \\t]*\\w+)*[ \\t]*\\.[ \\t]*${fn}[ \\t]*\\(`), fn]);
+    for (const fn of names) calls.push([new RegExp(`(?<![\\w.])${L(path)}[ \\t]*\\.[ \\t]*${fn}[ \\t]*\\(`), fn]);
   }
   let best = null;
   for (const [re, fn] of calls) {
