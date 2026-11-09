@@ -127,7 +127,7 @@ export function pyCall(src, modules, names) {
   const fnAlias = new Map(); // local name → function name
   const modPath = new Map(); // how the code writes a module of the package (yaml, yaml.composer, y) → the name it binds
   const importLines = new Set();
-  const own = [...flat];
+  const own = flat.split(''); // UTF-16 units, as the match positions count them
   const blank = (start, end) => { for (let i = start; i < end; i++) if (own[i] !== '\n') own[i] = ' '; };
   for (const m of flat.matchAll(/^[ \t]*from[ \t]+([\w.]+)[ \t]+import[ \t]+\(?([^)\n]*)\)?/gm)) {
     if (!isMod(m[1])) continue;
