@@ -14,4 +14,7 @@ permissions:
 jobs:
   security:
     uses: Enigmacker/securite-ci/.github/workflows/security.yml@58c817ba5a16df434f73576c6cfb44b4c009f19e # v1.1
-    # Les tests ont déjà leur propre workflow (ci.yml).
+    with:
+      # Les lockfiles de test/fixtures décrivent des projets vulnérables à dessein : seul le projet lui-même est audité.
+      audit-dirs: .
+      # Les tests ont déjà leur propre workflow (ci.yml).
