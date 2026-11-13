@@ -13,7 +13,7 @@ permissions:
   contents: read
 jobs:
   security:
-    uses: Enigmacker/securite-ci/.github/workflows/security.yml@296dee1ceefeb3eaee0eebddc371770f62df8fce # v1.2 (osv-exclude)
+    uses: Enigmacker/securite-ci/.github/workflows/security.yml@9b31bb6fcb0cd2c570bcc011587309fba4db316c # v1.2 (osv-exclude)
     with:
       # Les lockfiles de test/fixtures décrivent des projets vulnérables à dessein : seul le projet lui-même est audité.
       audit-dirs: .
