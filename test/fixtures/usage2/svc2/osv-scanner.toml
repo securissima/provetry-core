@@ -1,6 +1,0 @@
-# Données de test : ce projet décrit volontairement des versions vulnérables (les tests vérifient que
-# Provetry les trouve). Rien ici n'est installé ni livré. osv-scanner ne l'examine pas ; le reste du dépôt,
-# lui, reste vérifié (CI de sécurité commune).
-[[PackageOverrides]]
-ignore = true
-reason = "fixture de test, versions vulnérables voulues"

@@ -1,4 +1,4 @@
-# CI de sécurité commune (Enigmacker/securite-ci, v1.1) : npm audit, gitleaks, osv-scanner, Semgrep, tests.
+# CI de sécurité commune (Enigmacker/securite-ci, v1.2) : npm audit, gitleaks, osv-scanner, Semgrep, tests.
 name: security
 on:
   push:
@@ -13,8 +13,11 @@ permissions:
   contents: read
 jobs:
   security:
-    uses: Enigmacker/securite-ci/.github/workflows/security.yml@58c817ba5a16df434f73576c6cfb44b4c009f19e # v1.1
+    uses: Enigmacker/securite-ci/.github/workflows/security.yml@296dee1ceefeb3eaee0eebddc371770f62df8fce # v1.2 (osv-exclude)
     with:
       # Les lockfiles de test/fixtures décrivent des projets vulnérables à dessein : seul le projet lui-même est audité.
       audit-dirs: .
+      # Même raison pour osv-scanner ; certaines fixtures sont en plus illisibles à dessein (parent Maven
+      # inexistant, include pip absent), ce qui le ferait échouer.
+      osv-exclude: test/fixtures
       # Les tests ont déjà leur propre workflow (ci.yml).
