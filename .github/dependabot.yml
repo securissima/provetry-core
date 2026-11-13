@@ -10,5 +10,8 @@ updates:
     directory: "/"
     schedule:
       interval: monthly
+    # Une version publiée depuis moins de 7 jours n'est pas proposée (temps de repérer une version compromise).
+    cooldown:
+      default-days: 7
     exclude-paths:
       - "test/**"
