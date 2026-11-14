@@ -237,3 +237,17 @@ test('scan: operating-system packages of a release OSV does not cover are not as
   assert.equal(r.complete, false);
   assert.match(r.sources.find((s) => s.name === 'Operating-system packages').note, /1 not looked up/);
 });
+
+test('scan: Syft-style Alpine purls are looked up; RPM packages are said not to be', async () => {
+  const queries = [];
+  const fetch = fakeFetch();
+  const ctx = { fetchJson: async (url, opts) => { if (url.endsWith('/querybatch')) queries.push(...opts.body.queries); return fetch(url, opts); }, cache: memoryCache(), now: () => new Date('2026-11-07T10:00:00Z') };
+  const components = [
+    { type: 'apk', name: 'musl', version: '1.2.4-r2', purl: 'pkg:apk/alpine/musl@1.2.4-r2?arch=x86_64&distro=alpine-3.19.1&upstream=musl', scope: 'required', sources: ['s'] },
+    { type: 'rpm', name: 'bash', version: '5.1.8-6.el9', purl: 'pkg:rpm/redhat/bash@5.1.8-6.el9?arch=x86_64&distro=rhel-9.3', scope: 'required', sources: ['s'] },
+  ];
+  const r = await scan(ctx, components, { euvd: false, epss: false });
+  assert.deepEqual(queries, [{ package: { name: 'musl', ecosystem: 'Alpine:v3.19' }, version: '1.2.4-r2' }]);
+  assert.equal(r.complete, false);
+  assert.match(r.sources.find((s) => s.name === 'Operating-system packages').note, /pkg:rpm\/redhat\/bash/);
+});

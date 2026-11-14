@@ -39,7 +39,9 @@ export function distroOf(os) {
   const label = os.prettyName || id;
   if (id === 'wolfi' || id === 'chainguard') return { namespace: id, family: id, distro: '', lookup: true, base: id };
   if (id === 'debian' || id === 'ubuntu') {
-    const v = os.versionId || (id === 'debian' ? DEBIAN_CODENAMES[os.codename] : UBUNTU_CODENAMES[os.codename]) || '';
+    // Every stable Debian release has a VERSION_ID: without one, it is testing or unstable, which the
+    // advisories of stable releases do not cover. Ubuntu's development release has one too.
+    const v = os.versionId || (id === 'ubuntu' ? UBUNTU_CODENAMES[os.codename] : '') || '';
     if (!v) return { namespace: id, family: id, distro: '', lookup: false, why: `${label} names no release (testing or unstable): its packages are listed but not looked up` };
     return { namespace: id, family: id, distro: `${id}-${v}`, lookup: true, base: id };
   }
@@ -50,9 +52,9 @@ export function distroOf(os) {
   }
   // A derivative: looked up as the release it follows, when it says which.
   const ubuntu = UBUNTU_CODENAMES[os.ubuntuCodename] ?? (os.idLike.includes('ubuntu') ? UBUNTU_CODENAMES[os.codename] : undefined);
-  if (ubuntu) return { namespace: id, family: 'ubuntu', distro: `ubuntu-${ubuntu}`, lookup: true, base: 'ubuntu', derived: `${label} is looked up as Ubuntu ${ubuntu}: packages of its own are not covered` };
+  if (ubuntu) return { namespace: id, family: 'ubuntu', distro: `ubuntu-${ubuntu}`, lookup: true, base: 'ubuntu', derived: `${label} is looked up as Ubuntu ${ubuntu}: packages of its own are not covered, and its rebuilt versions compare only approximately with Ubuntu's fixes` };
   const debian = os.idLike.includes('debian') ? DEBIAN_CODENAMES[os.codename] : undefined;
-  if (debian) return { namespace: id, family: 'debian', distro: `debian-${debian}`, lookup: true, base: 'debian', derived: `${label} is looked up as Debian ${debian}: packages of its own are not covered` };
+  if (debian) return { namespace: id, family: 'debian', distro: `debian-${debian}`, lookup: true, base: 'debian', derived: `${label} is looked up as Debian ${debian}: packages of its own are not covered, and its rebuilt versions (such as +rpi1) compare only approximately with Debian's fixes` };
   const family = ['debian', 'ubuntu', 'alpine'].find((x) => os.idLike.includes(x)) ?? id;
   return { namespace: id, family, distro: os.versionId ? `${id}-${os.versionId}` : '', lookup: false, why: `no public advisory database covers ${label}: its packages are listed but not looked up` };
 }

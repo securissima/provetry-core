@@ -106,6 +106,9 @@ export function osvOsPackage(purl) {
     [, family, release] = m;
   } else if (family === 'wolfi' || family === 'chainguard') {
     release = '';
+  } else if (family === 'alpine') {
+    release = release.replace(/^alpine-/, '');   // Syft writes distro=alpine-3.19.1, purl-spec 3.19.1
+    if (!/^\d+\.\d+(\.\d+)?$/.test(release)) return null;
   } else if (family !== 'alpine' || !/^\d+\.\d+(\.\d+)?$/.test(release)) {
     return null;
   }

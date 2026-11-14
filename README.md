@@ -96,11 +96,11 @@ The archive may be compressed whole (gzip or zstd; zstd needs Node.js 22.15 or l
 - the operating system's packages: dpkg (Debian, Ubuntu, their derivatives, and distroless images' `status.d`), apk (Alpine, Wolfi, Chainguard) and opkg (OpenWrt, Yocto), with the release from `os-release`;
 - packages installed by language package managers: Python distributions (`*.dist-info`, `*.egg-info`), Node.js packages (`node_modules`), and the lock files present in the image (not those in caches, documentation or test fixtures).
 
-Debian, Ubuntu and Alpine packages are looked up on OSV.dev by release and source package (`Debian:12`, `Ubuntu:22.04:LTS`, `Alpine:v3.19`), Wolfi and Chainguard packages as such. A derivative (Raspberry Pi OS, Linux Mint) is looked up as the release it follows, which `os-release` names: its own packages are not covered. Nothing else of the image is kept in memory.
+Debian, Ubuntu and Alpine packages are looked up on OSV.dev by release and source package (`Debian:12`, `Ubuntu:22.04:LTS`, `Alpine:v3.19`), Wolfi and Chainguard packages as such. A derivative (Raspberry Pi OS, Linux Mint) is looked up as the release it follows, which `os-release` names: its own packages are not covered and its rebuilt versions compare only approximately, so the result is marked incomplete. Nothing else of the image is kept in memory.
 
-What Provetry cannot read is said, and the SBOM and the scan are marked incomplete (`scan --fail-on` then exits 2, never 0): RPM databases (Red Hat, Rocky, Alma, SUSE, Fedora), opkg packages and releases no public advisory database covers (Debian unstable, Alpine edge), a layer missing from the archive, several images in one archive. Save one image per archive.
+What Provetry cannot read is said, and the SBOM and the scan are marked incomplete (`scan --fail-on` then exits 2, never 0): RPM databases (Red Hat, Rocky, Alma, SUSE, Fedora), opkg packages and releases no public advisory database covers (Debian testing and unstable, Alpine edge), a layer missing from the archive, several images in one archive. Save one image per archive.
 
-For the rest (vendored C libraries, statically linked binaries, Java archives inside the image), generate an SBOM with your build tooling or with [Syft](https://github.com/anchore/syft) and pass it to `provetry scan`: CycloneDX JSON and SPDX JSON (2.x, and 3.x in JSON-LD) are read. In the GitHub Action, `image-tool: syft` keeps the generator used before 0.10 (it reads RPM databases, Java archives and Go binaries too, and needs an image name and Docker).
+For the rest (vendored C libraries, statically linked binaries, Java archives inside the image), generate an SBOM with your build tooling or with [Syft](https://github.com/anchore/syft) and pass it to `provetry scan`: CycloneDX JSON and SPDX JSON (2.x, and 3.x in JSON-LD) are read. In the GitHub Action, `image-tool: syft` keeps the generator used before 0.10 (it reads RPM databases, Java archives and Go binaries too). RPM packages, however they are listed, are not looked up yet: a `--fail-on` gate on an RPM-based image exits 2 (incomplete) until they are.
 
 ## SBOM
 
@@ -253,7 +253,7 @@ jobs:
           sarif_file: ${{ steps.provetry.outputs.sarif }}
 ```
 
-The version is the tag (`v2.4.0` becomes `2.4.0`). Uploads happen on tags only (`upload: always` to upload every run). A re-run of the same tag is fine; any other refusal fails the job. The SBOM, the reachability document and the SARIF report are in the step's outputs; the Markdown report goes to the job summary. With `image:`, reachability is skipped (it reads source code, not images); `platform: linux/arm64` picks the platform of a multi-platform image, and `image-tool: syft` uses Syft instead of Provetry's own reader. Upgrading from 0.9, where Syft read images: Provetry now reads them itself and says what it cannot read (RPM databases, Java archives, Go binaries); if your images rely on those, set `image-tool: syft`.
+The version is the tag (`v2.4.0` becomes `2.4.0`). Uploads happen on tags only (`upload: always` to upload every run). A re-run of the same tag is fine; any other refusal fails the job. The SBOM, the reachability document and the SARIF report are in the step's outputs; the Markdown report goes to the job summary. With `image:`, reachability is skipped (it reads source code, not images); `platform: linux/arm64` picks the platform of a multi-platform image, and `image-tool: syft` uses Syft instead of Provetry's own reader. Upgrading from 0.9, where Syft read images: Provetry now reads them itself and says what it cannot read (RPM databases, Java archives, Go binaries); if your images rely on those, set `image-tool: syft` for a complete SBOM (the scan of RPM packages stays incomplete for now).
 
 ### GitLab CI
 

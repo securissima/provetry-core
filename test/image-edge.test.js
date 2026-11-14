@@ -226,10 +226,12 @@ test('OCI: a foreign layer not in the archive is skipped, and the result is inco
 
 test('releases: derivatives as their parent, Wolfi and Chainguard, and those that cannot be looked up', () => {
   const d = (t) => distroOf(parseOsRelease(t));
-  assert.deepEqual(d('ID=raspbian\nID_LIKE=debian\nVERSION_ID="12"\nVERSION_CODENAME=bookworm\n'), { namespace: 'raspbian', family: 'debian', distro: 'debian-12', lookup: true, base: 'debian', derived: 'raspbian is looked up as Debian 12: packages of its own are not covered' });
+  const rpi = d('ID=raspbian\nID_LIKE=debian\nVERSION_ID="12"\nVERSION_CODENAME=bookworm\n');
+  assert.equal(rpi.distro, 'debian-12');
+  assert.match(rpi.derived, /looked up as Debian 12: .*compare only approximately/);
   assert.equal(d('ID=linuxmint\nID_LIKE="ubuntu debian"\nVERSION_ID="21.3"\nVERSION_CODENAME=virginia\nUBUNTU_CODENAME=jammy\n').distro, 'ubuntu-22.04');
   assert.equal(d('ID=wolfi\nVERSION_ID=20230201\n').lookup, true);
-  assert.equal(d('ID=debian\nPRETTY_NAME="Debian GNU/Linux trixie/sid"\nVERSION_CODENAME=trixie\n').distro, 'debian-13', 'testing: by code name');
+  assert.equal(d('ID=debian\nPRETTY_NAME="Debian GNU/Linux forky/sid"\nVERSION_CODENAME=forky\n').lookup, false, 'testing: never as a stable release');
   assert.equal(d('ID=debian\nPRETTY_NAME="Debian GNU/Linux sid"\n').lookup, false, 'unstable: no release');
   assert.equal(d('ID=alpine\nVERSION_ID=3.20_alpha20240329\nPRETTY_NAME="Alpine Linux edge"\n').lookup, false, 'edge: a snapshot');
   assert.equal(d('ID=alpine\nVERSION_ID=edge\n').lookup, false);
@@ -239,6 +241,7 @@ test('releases: derivatives as their parent, Wolfi and Chainguard, and those tha
   assert.equal(osvOsPackage('pkg:apk/wolfi/glibc@2.39-r1?arch=x86_64').ecosystem, 'Wolfi');
   assert.equal(osvOsPackage('pkg:apk/chainguard/glibc@2.39-r1').ecosystem, 'Chainguard');
   assert.equal(osvOsPackage('pkg:apk/alpine/musl@1.2.4?distro=edge'), null);
+  assert.equal(osvOsPackage('pkg:apk/alpine/musl@1.2.4-r2?distro=alpine-3.19.1&upstream=musl').ecosystem, 'Alpine:v3.19', 'as Syft writes it');
   assert.equal(osvOsPackage('pkg:apk/postmarketos/x@1?distro=postmarketos-v23.12'), null);
   assert.equal(osvOsPackage('pkg:deb/debian/x@1?distro=ubuntu-22.04'), null, 'a namespace and a release that disagree');
 });
@@ -248,7 +251,7 @@ test('an image whose release cannot be looked up says so, and the result is inco
   assert.ok(r.notices.some((n) => n.incomplete && /names no release/.test(n.text)), JSON.stringify(r.notices));
   const rpi = await readImage(file('rpi.tar', tarFiles([['etc/os-release', 'ID=raspbian\nID_LIKE=debian\nVERSION_ID="12"\nVERSION_CODENAME=bookworm\n'], ['var/lib/dpkg/status', 'Package: bash\nVersion: 5.2\n']])));
   assert.equal(rpi.components[0].purl, 'pkg:deb/raspbian/bash@5.2?distro=debian-12');
-  assert.ok(rpi.notices.some((n) => !n.incomplete && /looked up as Debian 12/.test(n.text)));
+  assert.ok(rpi.notices.some((n) => n.incomplete && /looked up as Debian 12/.test(n.text)), 'approximate: a gate cannot pass on it');
 });
 
 test('dpkg and opkg: only packages removed or never installed are left out; the source version is kept', () => {
@@ -273,4 +276,52 @@ test('fixed versions: only those of the component\'s own release', () => {
   assert.deepEqual(affectedFunctions(rec, purl), ['f']);
   // Language packages still match their ecosystem whatever follows the colon.
   assert.deepEqual(fixedVersions({ affected: [{ package: { ecosystem: 'PyPI', name: 'Requests' }, ranges: [{ events: [{ fixed: '2.32.0' }] }] }] }, 'pkg:pypi/requests@2.31.0'), ['2.32.0']);
+});
+
+test('a Docker archive: --platform is checked against its config; a missing layer is an error, not a root filesystem', async () => {
+  const layer = tarFiles([['etc/os-release', DEB], ['var/lib/dpkg/status', 'Package: bash\nVersion: 5.2\n']]);
+  const archive = tarFiles([['manifest.json', JSON.stringify([{ Config: 'c.json', RepoTags: ['a:1'], Layers: ['l/layer.tar'] }])], ['c.json', JSON.stringify({ os: 'linux', architecture: 'amd64' })], ['l/layer.tar', layer]]);
+  const p = file('plat.tar', archive);
+  assert.equal((await readImage(p, { platform: 'linux/amd64' })).components.length, 1);
+  await assert.rejects(readImage(p, { platform: 'linux/arm64' }), /for linux\/amd64, not linux\/arm64/);
+  const broken = tarFiles([['manifest.json', JSON.stringify([{ Config: 'c.json', Layers: ['l/layer.tar', 'm/layer.tar'] }])], ['c.json', '{}'], ['l/layer.tar', layer]]);
+  await assert.rejects(readImage(file('broken.tar', broken)), /m\/layer\.tar: layer missing/);
+});
+
+test('OCI: a non-distributable layer that is in the archive is read', async () => {
+  const layer = tarFiles([['etc/os-release', ALPINE], ['lib/apk/db/installed', 'P:musl\nV:1.2.4-r2\n\n']]);
+  const blobs = [];
+  const add = (b) => { blobs.push([`blobs/sha256/${sha(b)}`, b]); return `sha256:${sha(b)}`; };
+  const m = Buffer.from(JSON.stringify({ schemaVersion: 2, layers: [{ mediaType: 'application/vnd.oci.image.layer.nondistributable.v1.tar', digest: add(layer) }] }));
+  const archive = tarFiles([['oci-layout', '{}'], ['index.json', JSON.stringify({ manifests: [{ mediaType: 'application/vnd.oci.image.manifest.v1+json', digest: add(m) }] })], ...blobs]);
+  assert.equal((await readImage(file('nondist.tar', archive))).components.length, 1);
+});
+
+test('layers: many whiteouts of kept directories stay fast; a root opaque marker hides everything below', async () => {
+  const n = 5000;
+  const lower = tarFiles([['etc/os-release', DEB], ...Array.from({ length: n }, (_, i) => [`srv/node_modules/p${i}/package.json`, pkgJson(`p${i}`, '1.0.0')])]);
+  const upper = tarFiles([...Array.from({ length: n }, (_, i) => [`srv/node_modules/.wh.p${i}`, '']), ['srv/node_modules/kept/package.json', pkgJson('kept', '1.0.0')]]);
+  const t = Date.now();
+  const r = await readImage(file('many.tar', dockerArchive([lower, upper])));
+  assert.ok(Date.now() - t < 5000, `took ${Date.now() - t} ms`);
+  assert.deepEqual(r.components.map((c) => c.purl), ['pkg:npm/kept@1.0.0']);
+  const root = await readImage(file('rootopq.tar', dockerArchive([lower, tarFiles([['.wh..wh..opq', ''], ['opt/node_modules/new/package.json', pkgJson('new', '1.0.0')]])])));
+  assert.deepEqual(root.components.map((c) => c.purl), ['pkg:npm/new@1.0.0']);
+});
+
+test('layers: a hard link keeps the content its target had', async () => {
+  const l1 = tarOf(fileEntry('opt/node_modules/a/package.json', pkgJson('a', '1.0.0')), header({ name: 'opt/node_modules/b/package.json', type: '1', link: 'opt/node_modules/a/package.json' }), end());
+  const l2 = tarFiles([['opt/node_modules/a/package.json', pkgJson('a', '2.0.0')]]);
+  const r = await readImage(file('hard.tar', dockerArchive([l1, l2])));
+  assert.deepEqual(r.components.map((c) => c.purl).sort(), ['pkg:npm/a@1.0.0', 'pkg:npm/a@2.0.0']);
+});
+
+test('the Go module cache is not installed software, wherever it lives', async () => {
+  const r = await readImage(file('gocache.tar', tarFiles([['etc/os-release', DEB], ['home/dev/go/pkg/mod/github.com/x/y@v1/package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/gocached': { version: '1.0.0' } } })], ['opt/node_modules/ok/package.json', pkgJson('ok', '1.0.0')]])));
+  assert.deepEqual(r.components.map((c) => c.purl), ['pkg:npm/ok@1.0.0']);
+});
+
+test('an archive compressed whole that decompresses past the cap is refused, and leaves nothing behind', async () => {
+  const bomb = gzipSync(Buffer.alloc(8 * 1024 * 1024));
+  await assert.rejects(readImage(file('bomb.tar.gz', bomb), { unpackedCap: 1024 * 1024 }), /once decompressed/);
 });

@@ -10,6 +10,7 @@ import { basename, join } from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
+import { Transform } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { sniff, indexTar, openStream, readTar, normPath } from './tar.js';
 import { parseOsRelease, distroOf, parseDpkgStatus, parseApkInstalled, parseOpkgStatus, parsePythonMetadata, parseNodePackage } from './packages.js';
@@ -21,11 +22,12 @@ const SMALL_CAP = 2 * MB;        // os-release, METADATA, package.json
 const LOCK_CAP = 20 * MB;        // a lock file, as for directories
 const TOTAL_BYTES = 512 * MB;    // all the files kept, across layers
 const TOTAL_FILES = 200_000;     // all the paths kept, across layers
+const UNPACKED_CAP = 16 * 1024 * MB;  // an archive compressed whole, once decompressed to disk
 const LOCK_NAMES = new Set(Object.keys(PARSERS).filter((k) => PARSERS[k]));
 const RPM_DB = /^(var\/lib\/rpm\/(Packages|rpmdb\.sqlite)|usr\/lib\/sysimage\/rpm\/rpmdb\.sqlite)$/;
 // Lock files that describe no installed software: caches, documentation, test fixtures, examples.
-const NOT_INSTALLED = /(^|\/)(node_modules|vendor|\.cache|\.npm|\.yarn|\.pnpm-store|\.cargo|\.git|tests?|testdata|fixtures|__tests__|__fixtures__|examples?|samples?)\//;
-const SYSTEM_DIRS = /^(proc|sys|dev|tmp|var\/tmp|var\/cache|usr\/share|root\/go\/pkg|go\/pkg)\//;
+const NOT_INSTALLED = /(^|\/)(node_modules|vendor|\.cache|\.npm|\.yarn|\.pnpm-store|\.cargo|\.git|go\/pkg\/mod|tests?|testdata|fixtures|__tests__|__fixtures__|examples?|samples?)\//;
+const SYSTEM_DIRS = /^(proc|sys|dev|tmp|var\/tmp|var\/cache|usr\/share)\//;
 // Python packages that Debian and Ubuntu install themselves: already listed through dpkg.
 const DEBIAN_PYTHON = /^usr\/lib\/python3[^/]*\/dist-packages\//;
 
@@ -54,30 +56,33 @@ class Layers {
     this.links = new Map();     // path → target path
     this.rpm = new Set();
     this.tooLarge = new Map();  // path → size: wanted, but over its cap
-    this.dirs = new Map();      // directory → how many kept paths lie under it (to find them without a full scan)
+    this.under = new Map();     // directory → the kept paths below it, at any depth ('' is the root)
     this.bytes = 0;
   }
   has(path) { return this.files.has(path) || this.links.has(path) || this.rpm.has(path) || this.tooLarge.has(path); }
   count() { return this.files.size + this.links.size + this.rpm.size + this.tooLarge.size; }
-  track(path, delta) {
-    for (let i = path.lastIndexOf('/'); i > 0; i = path.lastIndexOf('/', i - 1)) {
-      const d = path.slice(0, i);
-      const n = (this.dirs.get(d) ?? 0) + delta;
-      if (n > 0) this.dirs.set(d, n); else this.dirs.delete(d);
+  /** Whether removing this path would remove anything: a kept path, or a directory holding some. */
+  holds(path) { return this.has(path) || this.under.has(path); }
+  track(path, add) {
+    const dirs = [''];
+    for (let i = path.indexOf('/'); i > 0; i = path.indexOf('/', i + 1)) dirs.push(path.slice(0, i));
+    for (const d of dirs) {
+      let set = this.under.get(d);
+      if (add) { if (!set) this.under.set(d, set = new Set()); set.add(path); }
+      else if (set) { set.delete(path); if (!set.size) this.under.delete(d); }
     }
   }
   drop(path) {
     if (!this.has(path)) return;
     if (this.files.has(path)) this.bytes -= this.files.get(path).length;
     this.files.delete(path); this.links.delete(path); this.rpm.delete(path); this.tooLarge.delete(path);
-    this.track(path, -1);
+    this.track(path, false);
   }
-  /** Removes a path and, if it is a directory holding kept paths, all of them. */
+  /** Removes a path and, if it is a directory holding kept paths, all of them (only those: no full scan). */
   remove(path, keepItself = false) {
     if (!keepItself) this.drop(path);
-    if (!this.dirs.has(path)) return;
-    const prefix = `${path}/`;
-    for (const m of [this.files, this.links, this.rpm, this.tooLarge]) for (const k of [...m.keys()]) if (k.startsWith(prefix)) this.drop(k);
+    const set = this.under.get(path);
+    if (set) for (const k of [...set]) this.drop(k);
   }
   set(path, what) {
     this.drop(path);
@@ -85,7 +90,7 @@ class Layers {
     else if (what.link !== undefined) this.links.set(path, what.link);
     else if (what.rpm) this.rpm.add(path);
     else if (what.tooLarge !== undefined) this.tooLarge.set(path, what.tooLarge);
-    this.track(path, 1);
+    this.track(path, true);
     if (this.bytes > TOTAL_BYTES) throw new Error(`more than ${TOTAL_BYTES / MB} MB of package databases and lock files: not read`);
     if (this.count() > TOTAL_FILES) throw new Error(`more than ${TOTAL_FILES} package files: not read`);
   }
@@ -100,17 +105,25 @@ class Layers {
     await readTar(stream, (e) => {
       const name = basename(e.path);
       const dir = e.path.slice(0, -name.length).replace(/\/$/, '');
-      if (name === '.wh..wh..opq') { opaque.push(dir); return 0; }
-      if (name.startsWith('.wh.')) { whiteouts.push(dir ? `${dir}/${name.slice(4)}` : name.slice(4)); return 0; }
+      // Whiteouts are kept only when they hide something kept below: their number is bounded by what is kept.
+      if (name === '.wh..wh..opq') { if (this.under.has(dir)) opaque.push(dir); return 0; }
+      if (name.startsWith('.wh.')) { const p = dir ? `${dir}/${name.slice(4)}` : name.slice(4); if (this.holds(p)) whiteouts.push(p); return 0; }
       if (e.type === 'dir') return 0;
-      if (this.dirs.has(e.path)) replaced.push(e.path);
+      if (this.under.has(e.path)) replaced.push(e.path);
       adds.delete(e.path);
       const w = wanted(e.path);
       if (!w) { if (this.has(e.path)) replaced.push(e.path); return 0; }
       if (w.kind === 'rpm') { adds.set(e.path, { rpm: true }); return 0; }
-      if (e.type === 'symlink' || e.type === 'hardlink') {
-        // A symbolic link is relative to its directory; a hard link names a path from the archive's root.
-        adds.set(e.path, { link: e.type === 'symlink' && !e.linkname.startsWith('/') ? normPath(`${dir}/${e.linkname}`) : normPath(e.linkname) });
+      if (e.type === 'symlink') {
+        // A symbolic link is relative to its directory, and follows its target whatever replaces it later.
+        adds.set(e.path, { link: e.linkname.startsWith('/') ? normPath(e.linkname) : normPath(`${dir}/${e.linkname}`) });
+        return 0;
+      }
+      if (e.type === 'hardlink') {
+        // A hard link names a path from the archive's root, and keeps the content it had when it was made.
+        const t = normPath(e.linkname);
+        const now = adds.has(t) ? adds.get(t) : this.files.has(t) ? { data: this.files.get(t) } : this.links.has(t) ? { link: this.links.get(t) } : null;
+        if (now) adds.set(e.path, now);
         return 0;
       }
       if (e.type !== 'file') { replaced.push(e.path); return 0; }
@@ -171,7 +184,7 @@ async function parseAll(layers) {
   if (lists.some((l) => l.some((c) => c.type === 'opkg'))) notices.push({ file: 'opkg', incomplete: true, text: 'opkg packages are listed in the SBOM, but no public advisory database covers them: they are not looked up.' });
   if (osPackages && !os) notices.push({ file: 'os-release', incomplete: true, text: 'No os-release file: the operating system and its release are unknown, so its packages cannot be looked up.' });
   else if (osPackages && dist && !dist.lookup) notices.push({ file: 'os-release', incomplete: true, text: `${dist.why}.` });
-  else if (osPackages && dist?.derived) notices.push({ file: 'os-release', text: `${dist.derived}.` });
+  else if (osPackages && dist?.derived) notices.push({ file: 'os-release', incomplete: true, text: `${dist.derived}.` });
   const components = mergeComponents(lists);
   return { components, os, files: paths.filter((p) => wanted(p)?.kind !== 'os'), errors, notices };
 }
@@ -189,14 +202,13 @@ const blobPath = (digest) => `blobs/${String(digest).replace(':', '/')}`;
 const INDEX_TYPES = new Set(['application/vnd.oci.image.index.v1+json', 'application/vnd.docker.distribution.manifest.list.v2+json']);
 const MANIFEST_TYPES = new Set(['application/vnd.oci.image.manifest.v1+json', 'application/vnd.docker.distribution.manifest.v2+json']);
 const FOREIGN = /(foreign|nondistributable)/;
-const isLayerType = (t) => !t || /(\.layer\.v1\.tar|\.rootfs\.diff\.tar|\.image\.rootfs)/.test(t);
+const isLayerType = (t) => !t || /(\.layer\.v1\.tar|\.layer\.nondistributable\.v1\.tar|\.rootfs\.diff\.tar|\.rootfs\.foreign\.diff\.tar|\.image\.rootfs)/.test(t);
 const platformOf = (d) => (d.platform ? [d.platform.os, d.platform.architecture, d.platform.variant].filter(Boolean).join('/') : '');
 
-/** A Docker archive's manifest.json, if it really is one (a root filesystem may carry a file of that name). */
-function dockerManifest(m, idx) {
+/** A Docker archive's manifest.json, if it has that shape (a root filesystem may carry a file of that name). */
+function dockerManifest(m) {
   if (!Array.isArray(m) || !m.length) return null;
-  if (!m.every((x) => x && typeof x.Config === 'string' && Array.isArray(x.Layers) && x.Layers.every((l) => typeof l === 'string'))) return null;
-  return m[0].Layers.every((l) => idx.has(normPath(l))) ? m : null;
+  return m.every((x) => x && typeof x.Config === 'string' && Array.isArray(x.Layers) && x.Layers.every((l) => typeof l === 'string')) ? m : null;
 }
 
 /** "registry:5000/acme/gateway:4.2.0" → { name: "registry:5000/acme/gateway", version: "4.2.0" } (a digest is not a version). */
@@ -210,13 +222,25 @@ function splitRef(ref) {
 /** The layers of the image in an archive, in order, its name and version if it says them, and notices. */
 async function imageLayers(path, idx, platform) {
   const notices = [];
+  const oci = idx.has('index.json') && idx.has('oci-layout');
   if (idx.has('manifest.json')) {
-    const m = dockerManifest(await readJsonEntry(path, idx, 'manifest.json').catch(() => null), idx);
-    if (m) {
-      if (m.length > 1) notices.push({ file: 'manifest.json', incomplete: true, text: `This archive holds ${m.length} images: only the first one (${m[0].RepoTags?.[0] ?? 'untagged'}) is read. Save one image per archive.` });
-      return { layers: m[0].Layers.map((l) => ({ path: normPath(l) })), ...splitRef(m[0].RepoTags?.[0]), notices };
-    }
-    if (!idx.has('index.json')) return null;
+    const m = dockerManifest(await readJsonEntry(path, idx, 'manifest.json').catch(() => null));
+    // A root filesystem with a manifest.json of its own: it has no layer files next to it.
+    const looksLikeImage = m && (m[0].Layers.some((l) => idx.has(normPath(l))) || idx.has(normPath(m[0].Config)));
+    if (looksLikeImage) {
+      const missing = m[0].Layers.find((l) => !idx.has(normPath(l)));
+      if (missing) throw new Error(`${missing}: layer missing from the archive`);
+      // The platform of a Docker archive is in its config; Docker 25+ archives also carry an OCI index.
+      const cfg = await readJsonEntry(path, idx, normPath(m[0].Config)).catch(() => null);
+      const plat = cfg?.os && cfg?.architecture ? [cfg.os, cfg.architecture, cfg.variant].filter(Boolean).join('/') : '';
+      const matches = !platform || !plat || plat === platform || `${cfg.os}/${cfg.architecture}` === platform;
+      if (matches) {
+        if (platform && !plat) notices.push({ file: 'manifest.json', info: true, text: `This archive does not say its platform: --platform ${platform} cannot be checked.` });
+        if (m.length > 1) notices.push({ file: 'manifest.json', incomplete: true, text: `This archive holds ${m.length} images: only the first one (${m[0].RepoTags?.[0] ?? 'untagged'}) is read. Save one image per archive.` });
+        return { layers: m[0].Layers.map((l) => ({ path: normPath(l) })), ...splitRef(m[0].RepoTags?.[0]), notices };
+      }
+      if (!oci) throw new Error(`this image is for ${plat}, not ${platform}: save the image for ${platform} (docker pull --platform ${platform}, then docker save)`);
+    } else if (!oci) return null;
   }
   if (!idx.has('index.json') || !idx.has('oci-layout')) return null;
   // OCI layout: index.json → (an index for several platforms →) the image manifest → its layers.
@@ -255,7 +279,7 @@ async function imageLayers(path, idx, platform) {
       if (platform || list.length !== 1) throw new Error(`no image for ${want} in this archive (it has: ${plats.join(', ') || 'none'}); pass --platform`);
       desc = list[0];
     } else desc = pick;
-    if (list.length > 1) notices.push({ file: 'index.json', text: `This image is published for ${plats.length} platforms (${plats.join(', ')}): the ${platformOf(desc) || want} one is read${platform ? '' : ', pass --platform for another'}.` });
+    if (list.length > 1) notices.push({ file: 'index.json', info: true, text: `This image is published for ${plats.length} platforms (${plats.join(', ')}): the ${platformOf(desc) || want} one is read${platform ? '' : ', pass --platform for another'}.` });
   }
   throw new Error('index.json: no image manifest found');
 }
@@ -264,7 +288,8 @@ async function imageLayers(path, idx, platform) {
  * Reads a container image archive or a root filesystem archive, compressed or not. Returns { components, os,
  * name, version, files, errors, notices }, components shaped like those read from lock files (sources: the
  * paths inside). Notices marked `incomplete` say what the SBOM is missing.
- * @param {{ platform?: string }} [opts] the platform to read from a multi-platform image ("linux/arm64")
+ * @param {{ platform?: string, unpackedCap?: number }} [opts] the platform to read from a multi-platform image
+ *   ("linux/arm64"); the most bytes a compressed archive may decompress to (default 16 GB)
  */
 export async function readImage(path, opts = {}) {
   const kind = await sniff(path);
@@ -276,7 +301,13 @@ export async function readImage(path, opts = {}) {
     if (kind !== 'tar') {
       tmp = await mkdtemp(join(tmpdir(), 'provetry-'));
       tarPath = join(tmp, 'archive.tar');
-      await pipeline(await openStream(path), createWriteStream(tarPath));
+      let written = 0;
+      const limit = opts.unpackedCap ?? UNPACKED_CAP;
+      const cap = new Transform({ transform(chunk, _enc, done) {
+        written += chunk.length;
+        done(written > limit ? new Error(`more than ${Math.round(limit / 1024 / MB)} GB once decompressed: decompress it yourself if it really is that large`) : null, chunk);
+      } });
+      await pipeline(await openStream(path), cap, createWriteStream(tarPath));
       if (await sniff(tarPath) !== 'tar') throw new Error(`${basename(path)} is compressed, but not a tar archive`);
     }
     const idx = await indexTar(tarPath);

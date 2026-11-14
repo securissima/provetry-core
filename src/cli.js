@@ -165,7 +165,8 @@ export async function main(argv) {
     if (unknownDirect.length) process.stderr.write(`provetry: no manifest says which dependencies are direct for ${unknownDirect.join(', ')}: their top-level dependencies cannot be told apart from the others in the SBOM\n`);
     const product = { name: values.name ?? name, version: values.version ?? (version || undefined), supplier: values.supplier };
     // What the files could not give (Maven's transitive tree, unresolved versions) is written in the SBOM too.
-    const incomplete = notices.map((n) => n.text);
+    // Only what is missing: notices that merely inform (the platform read) are not gaps.
+    const incomplete = notices.filter((n) => !n.info).map((n) => n.text);
     const unresolved = notices.reduce((s, n) => s + (n.missing ?? 0), 0);
     const write = { spdx: toSpdx, spdx3: toSpdx3, cyclonedx: toCycloneDx }[values.format];
     const doc = write(product, components, { incomplete, unresolved });

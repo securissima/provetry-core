@@ -19,7 +19,7 @@ inputs:
     description: "A container image to describe instead of the lock files: an image name (pulled if needed, then saved with docker save), e.g. ghcr.io/acme/gateway:2.4.0, or the path of an image archive or of a firmware root filesystem archive (rootfs.tar, .tar.gz, .tar.zst)."
     default: ""
   image-tool:
-    description: "Who reads the image: provetry (the default: Debian, Ubuntu, Alpine, Wolfi, opkg packages, Python and Node.js packages, lock files; no Docker daemon needed for an archive) or syft (the generator used before 0.10: also RPM databases, Java archives and Go binaries; image names only)."
+    description: "Who reads the image: provetry (the default: Debian, Ubuntu, Alpine, Wolfi, opkg packages, Python and Node.js packages, lock files; no Docker daemon needed for an archive) or syft (the generator used before 0.10: also RPM databases, Java archives and Go binaries; RPM packages are not looked up yet, so a fail-on gate on an RPM image exits incomplete)."
     default: provetry
   platform:
     description: "The platform to read from a multi-platform image, e.g. linux/arm64 (default: linux/amd64)."
@@ -149,6 +149,7 @@ runs:
           if ! [[ "$P_PLATFORM" =~ ^[a-z0-9]+/[a-z0-9]+(/[a-z0-9]+)?$ ]]; then echo "::error::Provetry: '$P_PLATFORM' is not a platform such as linux/arm64"; exit 2; fi
           plat=(--platform "$P_PLATFORM")
         fi
+        if [ ! -f "$P_IMAGE" ] && ! [[ "$P_IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$ ]]; then echo "::error::Provetry: '$P_IMAGE' is neither a file nor an image name"; exit 2; fi
         "$SYFT" "$P_IMAGE" ${plat[@]+"${plat[@]}"} -o "cyclonedx-json=$P_OUT"
 
     # Reachability reads the source; it says nothing about the other binaries an image may contain.
