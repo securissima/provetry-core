@@ -1,4 +1,6 @@
-# CI de sécurité commune (securissima/securite-ci-securissima, v1.2) : npm audit, gitleaks, osv-scanner, Semgrep, tests.
+# Security CI: npm audit, gitleaks, osv-scanner and Semgrep.
+# security-common.yml is a verbatim copy of the shared security workflow (v1.2): a public repository
+# cannot call a private reusable workflow. Keep it byte-identical when updating it.
 name: security
 on:
   push:
@@ -6,18 +8,18 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    - cron: '23 4 * * 1' # chaque lundi, passage complet
+    - cron: '23 4 * * 1' # every Monday, full pass
   workflow_dispatch:
-# Indispensable : c'est le plafond des droits du workflow commun, quoi que contienne une version future.
+# Required: the ceiling of the called workflow's permissions.
 permissions:
   contents: read
 jobs:
   security:
-    uses: securissima/securite-ci-securissima/.github/workflows/security.yml@9f890c94838baedefb58775bf7eb21120b6f7756 # v1.2 (osv-exclude)
+    uses: ./.github/workflows/security-common.yml
     with:
-      # Les lockfiles de test/fixtures décrivent des projets vulnérables à dessein : seul le projet lui-même est audité.
+      # The lock files of test/fixtures describe vulnerable projects on purpose: only the project itself is audited.
       audit-dirs: .
-      # Même raison pour osv-scanner ; certaines fixtures sont en plus illisibles à dessein (parent Maven
-      # inexistant, include pip absent), ce qui le ferait échouer.
+      # Same reason for osv-scanner; some fixtures are also unreadable on purpose (missing Maven parent,
+      # missing pip include), which would make it fail.
       osv-exclude: test/fixtures
-      # Les tests ont déjà leur propre workflow (ci.yml).
+      # The tests have their own workflow (ci.yml).

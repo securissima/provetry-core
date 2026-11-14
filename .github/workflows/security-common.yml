@@ -1,0 +1,309 @@
+# CI de sécurité commune (workflow réutilisable). Chaque dépôt l'appelle avec un petit fichier
+# .github/workflows/security.yml (voir exemples/ et README.md).
+#
+# Elle n'analyse que le CODE du dépôt appelant ; elle n'interroge jamais les sites ou services du dépôt
+# (seuls le registre npm, la base OSV et le registre de règles Semgrep sont consultés) :
+#   deps  : npm audit sur chaque projet npm (dépendances de production, échec en high/critical par défaut)
+#   scan  : gitleaks (secrets en dur, bloquant), osv-scanner (lockfiles contre la base OSV, bloquant),
+#           Semgrep (OWASP / JS / TS / Node / secrets, informatif par défaut)
+#   tests : `npm test` dans les dossiers demandés (facultatif), avec si besoin `npm run build` avant et des
+#           paquets Ubuntu installés (Poppler, pypdf…)
+#
+# Sécurité du workflow lui-même :
+#   - aucune entrée n'est recopiée dans un script : elles passent par des variables d'environnement
+#     et sont validées (noms de dossiers, niveau d'audit) ;
+#   - jeton en lecture seule, aucun secret demandé, checkout sans identifiants conservés ;
+#   - actions épinglées par SHA de commit, images Docker par empreinte (digest) ;
+#   - toujours sur les runners GitHub : ce workflow tourne sur pull_request (PR Dependabot comprises),
+#     il ne doit jamais recevoir un runner auto-hébergé.
+name: security (commun)
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Version de Node.js pour npm audit et les tests.
+        type: string
+        default: '22'
+      audit-dirs:
+        description: Dossiers npm à auditer, séparés par des espaces (« . » pour la racine). Vide = chaque package-lock.json du dépôt, hors node_modules et vendor.
+        type: string
+        default: ''
+      audit-level:
+        description: Gravité qui fait échouer npm audit (low, moderate, high, critical).
+        type: string
+        default: high
+      test-dirs:
+        description: Dossiers où lancer `npm ci --ignore-scripts` puis `npm test`, séparés par des espaces. Vide = pas de tests.
+        type: string
+        default: ''
+      test-build:
+        description: true pour lancer `npm run build` avant `npm test` dans chaque dossier de test-dirs (tests qui lisent le site construit).
+        type: boolean
+        default: false
+      apt-packages:
+        description: Paquets Ubuntu à installer avant les tests, séparés par des espaces (ex. « poppler-utils python3-pypdf »). Vide = aucun.
+        type: string
+        default: ''
+      osv-exclude:
+        description: Dossiers qu'osv-scanner ne voit pas, séparés par des espaces (ex. « test/fixtures » quand des données de test décrivent des projets vulnérables ou cassés à dessein). Vide = tout le dépôt. Ni npm audit, ni gitleaks, ni Semgrep ne sont concernés.
+        type: string
+        default: ''
+      semgrep-blocking:
+        description: true pour que Semgrep fasse échouer la CI (sinon il est informatif).
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  deps:
+    name: npm audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: npm audit
+        env:
+          AUDIT_DIRS: ${{ inputs.audit-dirs }}
+          AUDIT_LEVEL: ${{ inputs.audit-level }}
+        run: |
+          set -euo pipefail
+          set -f  # aucun développement de motif (*, ?) dans les noms de dossiers
+          case "$AUDIT_LEVEL" in low|moderate|high|critical) ;; *) echo "::error::audit-level invalide"; exit 1 ;; esac
+          # Un chemin relatif simple : caractères sûrs, pas d'option déguisée, pas de segment « .. ».
+          ok_dir() { [[ "$1" =~ ^[A-Za-z0-9._/-]+$ ]] && [[ "$1" != -* && "$1" != /* && "/$1/" != */../* ]]; }
+          dirs=()
+          if [ -n "$AUDIT_DIRS" ]; then
+            read -r -a dirs <<< "$AUDIT_DIRS"
+          else
+            mapfile -d '' dirs < <(find . -name package-lock.json -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path './.git/*' -printf '%h\0' | sort -zu)
+            # Un package.json sans lockfile n'est audité ni par npm audit ni par osv-scanner : le signaler.
+            while IFS= read -r -d '' pj; do
+              d=$(dirname "$pj")
+              [ -f "$d/package-lock.json" ] || [ -f "$d/npm-shrinkwrap.json" ] || \
+                echo "::warning title=npm audit::${d//[^A-Za-z0-9._\/-]/?} : package.json sans package-lock.json, dépendances non auditées"
+            done < <(find . -name package.json -not -path '*/node_modules/*' -not -path '*/vendor/*' -not -path './.git/*' -print0)
+          fi
+          if [ "${#dirs[@]}" = 0 ]; then
+            echo "Aucun projet npm avec package-lock.json : rien à auditer." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          failed=''
+          for dir in "${dirs[@]}"; do
+            ok_dir "$dir" || { echo "::error::dossier refusé : ${dir//[^A-Za-z0-9._\/-]/?}"; exit 1; }
+            [ -f "$dir/package-lock.json" ] || { echo "::error::$dir : pas de package-lock.json"; failed="$failed $dir"; continue; }
+            echo "::group::npm audit — $dir"
+            if (cd "$dir" && npm audit --omit=dev --audit-level="$AUDIT_LEVEL"); then
+              echo "$dir : ok"
+            else
+              echo "::error title=npm audit::$dir a une vulnérabilité connue de niveau $AUDIT_LEVEL ou plus (voir le groupe ci-dessus)"
+              failed="$failed $dir"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "npm audit en échec pour :$failed" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "npm audit : tous les projets sont ok (${dirs[*]})" >> "$GITHUB_STEP_SUMMARY"
+
+  scan:
+    name: gitleaks + osv-scanner + semgrep
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Tout l'historique sur une PR : gitleaks lit aussi chacun de ses commits.
+          # '0' en chaîne : le nombre 0 serait faux dans l'expression et donnerait 1.
+          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+      # Une PR peut affaiblir les scanners en modifiant leur configuration ou ce workflow : on le signale
+      # en évidence, pour que la relecture le voie (le passage hebdomadaire sur main rattrape le reste).
+      - name: Configuration des scanners modifiée par la PR ?
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Les deux commits doivent être là : sinon la comparaison serait vide, sans le dire.
+          for c in "$BASE_SHA" "$HEAD_SHA"; do
+            git cat-file -e "$c^{commit}" 2>/dev/null || { echo "::error::commit de la PR absent du checkout (${c:0:12})"; exit 1; }
+          done
+          diff=$(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+          changed=$(printf '%s\n' "$diff" | grep -E '(^|/)(\.gitleaks\.toml|\.gitleaksignore|osv-scanner\.toml|\.semgrepignore|\.npmrc)$|^\.github/(workflows/|dependabot\.yml$)' || true)
+          if [ -n "$changed" ]; then
+            while IFS= read -r f; do
+              echo "::warning title=Configuration de sécurité modifiée::${f//[^A-Za-z0-9._\/-]/?} : cette PR modifie la configuration des scanners ou de la CI, à relire de près"
+            done <<< "$changed"
+            { echo "### Configuration de sécurité modifiée par la PR"; echo; echo '```'; echo "$changed"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # Secrets en dur : l'arborescence, et sur une PR chacun de ses commits (un secret ajouté puis retiré
+      # resterait dans l'historique). Bloquant. Le .gitleaks.toml du dépôt appelant est utilisé s'il existe.
+      - name: gitleaks
+        env:
+          IS_PR: ${{ github.event_name == 'pull_request' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          img=ghcr.io/gitleaks/gitleaks:v8.28.0@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854
+          cfg=()
+          [ -f .gitleaks.toml ] && cfg=(--config /src/.gitleaks.toml)
+          # Lecture seule, sans réseau, sous l'utilisateur du runner (git refuse un dépôt d'un autre propriétaire).
+          run() { docker run --rm --network none --user "$(id -u):$(id -g)" -v "$PWD":/src:ro "$img" "$@"; }
+          rc=0
+          run dir "${cfg[@]}" --redact --verbose /src || rc=$?
+          if [ "$IS_PR" = true ]; then
+            [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::SHA de PR illisibles"; exit 1; }
+            for c in "$BASE_SHA" "$HEAD_SHA"; do
+              git cat-file -e "$c^{commit}" 2>/dev/null || { echo "::error::commit de la PR absent du checkout (${c:0:12})"; exit 1; }
+            done
+            echo "Commits de la PR analysés : $(git rev-list --count "$BASE_SHA..$HEAD_SHA")" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "::group::gitleaks — commits de la PR"
+            run git "${cfg[@]}" --redact --verbose --log-opts="$BASE_SHA..$HEAD_SHA" /src || rc=$?
+            echo "::endgroup::"
+          fi
+          exit "$rc"
+      # Chaque lockfile contre la base OSV. Bloquant, quelle que soit la gravité, dépendances de développement
+      # comprises (voir README : exclusions étroites dans osv-scanner.toml). Code 128 : aucun lockfile.
+      # osv-exclude : chaque dossier exclu est masqué dans le conteneur par un dossier vide (tmpfs), le dépôt restant
+      # monté en lecture seule. Un dossier exclu doit exister, être un vrai dossier (pas un lien) et ne jamais être
+      # la racine : une faute de frappe ou un lien ne peut pas cacher plus que prévu.
+      - name: OSV scan
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        env:
+          OSV_EXCLUDE: ${{ inputs.osv-exclude }}
+        run: |
+          set -uo pipefail
+          set -f
+          ok_dir() { [[ "$1" =~ ^[A-Za-z0-9._/-]+$ ]] && [[ "$1" != -* && "$1" != /* && "/$1/" != */../* && "/$1/" != */./* && "$1" != *//* ]]; }
+          masks=()
+          v="$OSV_EXCLUDE"
+          while [[ "$v" == *$'\n' ]]; do v="${v%$'\n'}"; done  # le saut de ligne final d'un bloc YAML « | »
+          [[ "$v" != *$'\n'* ]] || { echo "::error::osv-exclude : une seule ligne (dossiers séparés par des espaces)"; exit 1; }
+          read -r -a excl <<< "$v"
+          [ "${#excl[@]}" -le 50 ] || { echo "::error::osv-exclude : 50 dossiers au plus"; exit 1; }
+          for d in "${excl[@]}"; do
+            d="${d%/}"
+            [[ " ${seen:-} " != *" $d "* ]] || { echo "::error::osv-exclude : $d donné deux fois"; exit 1; }
+            seen="${seen:-} $d"
+            ok_dir "$d" || { echo "::error::osv-exclude : dossier refusé : ${d//[^A-Za-z0-9._\/-]/?}"; exit 1; }
+            # Aucun composant du chemin ne doit être un lien (un lien pourrait viser autre chose que ce qu'on lit).
+            p=''
+            IFS='/' read -r -a parts <<< "$d"
+            for part in "${parts[@]}"; do
+              p="${p:+$p/}$part"
+              [ -L "$p" ] && { echo "::error::osv-exclude : $d passe par un lien, refusé"; exit 1; }
+            done
+            [ -d "$d" ] || { echo "::error::osv-exclude : $d n'existe pas ou n'est pas un dossier"; exit 1; }
+            masks+=(--mount "type=tmpfs,destination=/src/$d,tmpfs-size=1m")
+            echo "osv-scanner : $d exclu (osv-exclude)" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+          rc=0
+          docker run --rm -v "$PWD":/src:ro "${masks[@]}" -w /src \
+            ghcr.io/google/osv-scanner:v2.0.2@sha256:385ff9dd9d50a573766fc226f24da1d61cd5843542ff7e04c563561bbd918e30 \
+            scan source --recursive . || rc=$?
+          # Sans lockfile : rien à vérifier, sauf si osv-exclude a tout masqué (osv-scanner ne doit pas pouvoir être
+          # éteint en excluant tout).
+          if [ "$rc" = 128 ] && [ "${#masks[@]}" -gt 0 ]; then echo "::error title=osv-scanner::aucun lockfile hors des dossiers de osv-exclude"; exit 1; fi
+          if [ "$rc" = 128 ]; then echo "Aucun lockfile : rien à vérifier par osv-scanner." | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          exit "$rc"
+      # Informatif par défaut : les constats (code 1) s'affichent sans bloquer. Une erreur de Semgrep lui-même
+      # (code 2 et plus : règles introuvables, réseau) fait toujours échouer : l'analyse n'a pas eu lieu.
+      - name: Semgrep
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        env:
+          BLOCKING: ${{ inputs.semgrep-blocking }}
+        run: |
+          rc=0
+          docker run --rm -v "$PWD":/src:ro -w /src \
+            semgrep/semgrep:1.184.0@sha256:cc1b68266f267878b39739373ea9985b9a78e5d64497dd875c8de100b22695ed \
+            semgrep scan --error --metrics=off \
+              --config p/default \
+              --config p/owasp-top-ten \
+              --config p/javascript \
+              --config p/typescript \
+              --config p/nodejs \
+              --config p/secrets || rc=$?
+          case "$rc" in
+            0) ;;
+            1) if [ "$BLOCKING" = true ]; then exit 1; fi
+               echo "::warning title=Semgrep::constats (informatif) : voir le journal" ;;
+            *) echo "::error title=Semgrep::Semgrep n'a pas pu analyser le dépôt (code $rc)"; exit "$rc" ;;
+          esac
+
+  tests:
+    name: tests
+    if: ${{ inputs.test-dirs != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      # Avant toute exécution du code du dépôt : seulement des noms de paquets exacts (pas d'option, de version,
+      # de source, de suffixe « - » qui désinstallerait, ni de motif), installés depuis les dépôts du runner.
+      - name: Paquets système
+        if: ${{ inputs.apt-packages != '' }}
+        env:
+          APT_PACKAGES: ${{ inputs.apt-packages }}
+        run: |
+          set -euo pipefail
+          set -f
+          # Toutes les lignes (une valeur YAML sur plusieurs lignes n'est pas tronquée en silence).
+          read -r -d '' -a pkgs <<< "$APT_PACKAGES" || true
+          [ "${#pkgs[@]}" -gt 0 ] || { echo "apt-packages vide : rien à installer."; exit 0; }
+          for p in "${pkgs[@]}"; do
+            [[ "$p" =~ ^[a-z0-9][a-z0-9+.-]{0,61}[a-z0-9+]$ ]] || { echo "::error::paquet refusé : ${p//[^a-z0-9+.-]/?}"; exit 1; }
+          done
+          sudo apt-get update -qq -o Acquire::Retries=3
+          # Nom exact d'un paquet réel connu : apt-get ne retombe alors jamais sur une recherche par motif.
+          # Pas de pipe (grep -q fermerait la liste avant la fin : SIGPIPE, faux « inconnu » avec pipefail).
+          for p in "${pkgs[@]}"; do
+            grep -qxF -- "$p" < <(apt-cache pkgnames -- "$p") || { echo "::error::paquet inconnu : $p"; exit 1; }
+          done
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends -o Acquire::Retries=3 -- "${pkgs[@]}"
+          echo "Paquets installés : ${pkgs[*]}" >> "$GITHUB_STEP_SUMMARY"
+      - name: npm test
+        env:
+          TEST_DIRS: ${{ inputs.test-dirs }}
+          TEST_BUILD: ${{ inputs.test-build }}
+        run: |
+          set -euo pipefail
+          set -f
+          ok_dir() { [[ "$1" =~ ^[A-Za-z0-9._/-]+$ ]] && [[ "$1" != -* && "$1" != /* && "/$1/" != */../* ]]; }
+          read -r -d '' -a dirs <<< "$TEST_DIRS" || true
+          failed=''
+          for dir in "${dirs[@]}"; do
+            ok_dir "$dir" || { echo "::error::dossier refusé : ${dir//[^A-Za-z0-9._\/-]/?}"; exit 1; }
+            echo "::group::tests — $dir"
+            # Pas de scripts d'installation : une dépendance compromise ne s'exécute pas à l'installation.
+            # npm ci avec un lockfile ; sans lockfile, npm install seulement s'il y a des dépendances.
+            install() {
+              if [ -f package-lock.json ]; then npm ci --ignore-scripts --no-audit --no-fund
+              elif jq -e '(.dependencies // {}) + (.devDependencies // {}) | length > 0' package.json >/dev/null; then
+                npm install --ignore-scripts --no-audit --no-fund --no-package-lock
+              fi
+            }
+            # Construction sans secret ni variable du site : seulement ce que le dépôt sait faire seul.
+            build() { if [ "$TEST_BUILD" = true ]; then npm run build; fi; }
+            if (cd "$dir" && install && build && npm test); then
+              echo "$dir : ok"
+            else
+              echo "::error title=tests::$dir : tests en échec (voir le groupe ci-dessus)"
+              failed="$failed $dir"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then echo "Tests en échec :$failed" >> "$GITHUB_STEP_SUMMARY"; exit 1; fi
+          echo "Tests : ok (${dirs[*]})" >> "$GITHUB_STEP_SUMMARY"
