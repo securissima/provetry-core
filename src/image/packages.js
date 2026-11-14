@@ -22,7 +22,8 @@ export function parseOsRelease(text) {
 }
 
 // Releases by code name, for derivatives that only say which release they follow.
-const DEBIAN_CODENAMES = { stretch: '9', buster: '10', bullseye: '11', bookworm: '12', trixie: '13', forky: '14' };
+// Released ones only: a derivative of Debian testing must not be looked up as a stable release.
+const DEBIAN_CODENAMES = { stretch: '9', buster: '10', bullseye: '11', bookworm: '12', trixie: '13' };
 const UBUNTU_CODENAMES = { xenial: '16.04', bionic: '18.04', focal: '20.04', jammy: '22.04', noble: '24.04', oracular: '24.10', plucky: '25.04', questing: '25.10' };
 
 /**

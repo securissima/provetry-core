@@ -325,3 +325,32 @@ test('an archive compressed whole that decompresses past the cap is refused, and
   const bomb = gzipSync(Buffer.alloc(8 * 1024 * 1024));
   await assert.rejects(readImage(file('bomb.tar.gz', bomb), { unpackedCap: 1024 * 1024 }), /once decompressed/);
 });
+
+test('OCI without an index to choose from (Docker 25+ archive, single-platform layout): --platform is checked', async () => {
+  const layer = tarFiles([['etc/os-release', ALPINE], ['lib/apk/db/installed', 'P:musl\nV:1.2.4-r2\n\n']]);
+  const blobs = [];
+  const add = (b) => { blobs.push([`blobs/sha256/${sha(b)}`, b]); return `sha256:${sha(b)}`; };
+  const cfg = Buffer.from(JSON.stringify({ os: 'linux', architecture: 'arm64' }));
+  const m = Buffer.from(JSON.stringify({ schemaVersion: 2, config: { digest: add(cfg) }, layers: [{ mediaType: 'application/vnd.oci.image.layer.v1.tar', digest: add(layer) }] }));
+  const md = add(m);
+  // Docker 25+: manifest.json (whose config says arm64) and an index.json pointing straight at the manifest.
+  const archive = tarFiles([['oci-layout', '{}'], ['index.json', JSON.stringify({ manifests: [{ mediaType: 'application/vnd.oci.image.manifest.v1+json', digest: md }] })],
+    ['manifest.json', JSON.stringify([{ Config: `blobs/sha256/${sha(cfg)}`, Layers: [`blobs/sha256/${sha(layer)}`] }])], ...blobs]);
+  const p = file('docker25.tar', archive);
+  await assert.rejects(readImage(p, { platform: 'linux/amd64' }), /for linux\/arm64, not linux\/amd64/);
+  assert.equal((await readImage(p, { platform: 'linux/arm64/v8' })).components.length, 1, 'a variant missing on one side matches');
+  const ociOnly = tarFiles([['oci-layout', '{}'], ['index.json', JSON.stringify({ manifests: [{ mediaType: 'application/vnd.oci.image.manifest.v1+json', digest: md }] })], ...blobs]);
+  await assert.rejects(readImage(file('single.tar', ociOnly), { platform: 'linux/amd64' }), /for linux\/arm64, not linux\/amd64/);
+});
+
+test('layers: a hard link to a file not kept replaces the kept file; an empty whiteout name hides nothing', async () => {
+  const lower = tarFiles([['etc/os-release', DEB], ['var/lib/dpkg/status', 'Package: gone\nVersion: 1.0\n'], ['opt/node_modules/ok/package.json', pkgJson('ok', '1.0.0')]]);
+  const upper = tarOf(fileEntry('opt/other.txt', 'x'), header({ name: 'var/lib/dpkg/status', type: '1', link: 'opt/other.txt' }), fileEntry('.wh.', ''), end());
+  const r = await readImage(file('hardstale.tar', dockerArchive([lower, upper])));
+  assert.deepEqual(r.components.map((c) => c.purl), ['pkg:npm/ok@1.0.0']);
+});
+
+test('a derivative of Debian testing is not looked up as a stable release', () => {
+  const d = distroOf(parseOsRelease('ID=kali\nID_LIKE=debian\nVERSION_CODENAME=forky\n'));
+  assert.equal(d.lookup, false);
+});

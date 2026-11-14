@@ -9,8 +9,8 @@ import { createGunzip } from 'node:zlib';
 import * as zlib from 'node:zlib';
 
 const BLOCK = 512;
-const META_CAP = 1024 * 1024;
-const MAX_ENTRIES = 2_000_000;  // files and links listed by indexTar (an image archive holds a few dozen)   // a pax record set, a GNU long name or long link name
+const META_CAP = 1024 * 1024;   // a pax record set, a GNU long name or long link name
+const MAX_ENTRIES = 2_000_000;  // files and links listed by indexTar (an image archive holds a few dozen)
 export const GZIP = (b) => b.length >= 2 && b[0] === 0x1f && b[1] === 0x8b;
 export const ZSTD = (b) => b.length >= 4 && b[0] === 0x28 && b[1] === 0xb5 && b[2] === 0x2f && b[3] === 0xfd;
 

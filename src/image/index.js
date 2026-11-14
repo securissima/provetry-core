@@ -100,19 +100,25 @@ class Layers {
    * directory hides everything the lower layers had under it.
    */
   async apply(stream) {
-    const whiteouts = []; const opaque = []; const replaced = []; const adds = new Map();
+    const whiteouts = []; const opaque = []; const replaced = new Set(); const adds = new Map();
     let staged = 0;
     await readTar(stream, (e) => {
       const name = basename(e.path);
       const dir = e.path.slice(0, -name.length).replace(/\/$/, '');
       // Whiteouts are kept only when they hide something kept below: their number is bounded by what is kept.
       if (name === '.wh..wh..opq') { if (this.under.has(dir)) opaque.push(dir); return 0; }
-      if (name.startsWith('.wh.')) { const p = dir ? `${dir}/${name.slice(4)}` : name.slice(4); if (this.holds(p)) whiteouts.push(p); return 0; }
+      if (name.startsWith('.wh.')) {
+        const target = name.slice(4);
+        if (!target || target === '.' || target === '..') return 0;   // names nothing: never the whole tree
+        const p = dir ? `${dir}/${target}` : target;
+        if (this.holds(p)) whiteouts.push(p);
+        return 0;
+      }
       if (e.type === 'dir') return 0;
-      if (this.under.has(e.path)) replaced.push(e.path);
+      if (this.under.has(e.path)) replaced.add(e.path);
       adds.delete(e.path);
       const w = wanted(e.path);
-      if (!w) { if (this.has(e.path)) replaced.push(e.path); return 0; }
+      if (!w) { if (this.has(e.path)) replaced.add(e.path); return 0; }
       if (w.kind === 'rpm') { adds.set(e.path, { rpm: true }); return 0; }
       if (e.type === 'symlink') {
         // A symbolic link is relative to its directory, and follows its target whatever replaces it later.
@@ -123,10 +129,10 @@ class Layers {
         // A hard link names a path from the archive's root, and keeps the content it had when it was made.
         const t = normPath(e.linkname);
         const now = adds.has(t) ? adds.get(t) : this.files.has(t) ? { data: this.files.get(t) } : this.links.has(t) ? { link: this.links.get(t) } : null;
-        if (now) adds.set(e.path, now);
+        if (now) adds.set(e.path, now); else replaced.add(e.path);
         return 0;
       }
-      if (e.type !== 'file') { replaced.push(e.path); return 0; }
+      if (e.type !== 'file') { replaced.add(e.path); return 0; }
       if (e.size > w.cap) { adds.set(e.path, { tooLarge: e.size }); return 0; }
       if (adds.size > TOTAL_FILES) throw new Error(`more than ${TOTAL_FILES} package files in one layer: not read`);
       return w.cap;
@@ -203,6 +209,11 @@ const INDEX_TYPES = new Set(['application/vnd.oci.image.index.v1+json', 'applica
 const MANIFEST_TYPES = new Set(['application/vnd.oci.image.manifest.v1+json', 'application/vnd.docker.distribution.manifest.v2+json']);
 const FOREIGN = /(foreign|nondistributable)/;
 const isLayerType = (t) => !t || /(\.layer\.v1\.tar|\.layer\.nondistributable\.v1\.tar|\.rootfs\.diff\.tar|\.rootfs\.foreign\.diff\.tar|\.image\.rootfs)/.test(t);
+/** Whether a platform ("linux/arm64/v8") is the one asked for; a variant missing on either side matches. */
+function samePlatform(have, want) {
+  const [ho, ha, hv] = have.split('/'); const [wo, wa, wv] = want.split('/');
+  return ho === wo && ha === wa && (!hv || !wv || hv === wv);
+}
 const platformOf = (d) => (d.platform ? [d.platform.os, d.platform.architecture, d.platform.variant].filter(Boolean).join('/') : '');
 
 /** A Docker archive's manifest.json, if it has that shape (a root filesystem may carry a file of that name). */
@@ -233,7 +244,7 @@ async function imageLayers(path, idx, platform) {
       // The platform of a Docker archive is in its config; Docker 25+ archives also carry an OCI index.
       const cfg = await readJsonEntry(path, idx, normPath(m[0].Config)).catch(() => null);
       const plat = cfg?.os && cfg?.architecture ? [cfg.os, cfg.architecture, cfg.variant].filter(Boolean).join('/') : '';
-      const matches = !platform || !plat || plat === platform || `${cfg.os}/${cfg.architecture}` === platform;
+      const matches = !platform || !plat || samePlatform(plat, platform);
       if (matches) {
         if (platform && !plat) notices.push({ file: 'manifest.json', info: true, text: `This archive does not say its platform: --platform ${platform} cannot be checked.` });
         if (m.length > 1) notices.push({ file: 'manifest.json', incomplete: true, text: `This archive holds ${m.length} images: only the first one (${m[0].RepoTags?.[0] ?? 'untagged'}) is read. Save one image per archive.` });
@@ -257,6 +268,16 @@ async function imageLayers(path, idx, platform) {
   for (let i = 0; i < 4 && desc; i++) {
     const doc = await readJsonEntry(path, idx, blobPath(desc.digest));
     if (Array.isArray(doc.layers)) {
+      // Reached without an index to choose from (a single-platform layout, a Docker 25+ archive): check it.
+      if (platform && i === 0) {
+        let plat = platformOf(desc);
+        if (!plat && doc.config?.digest && idx.has(blobPath(doc.config.digest))) {
+          const cfg = await readJsonEntry(path, idx, blobPath(doc.config.digest)).catch(() => null);
+          if (cfg?.os && cfg?.architecture) plat = [cfg.os, cfg.architecture, cfg.variant].filter(Boolean).join('/');
+        }
+        if (!plat) notices.push({ file: 'index.json', info: true, text: `This archive does not say its platform: --platform ${platform} cannot be checked.` });
+        else if (!samePlatform(plat, platform)) throw new Error(`this image is for ${plat}, not ${platform}: save the image for ${platform} (docker pull --platform ${platform}, then docker save)`);
+      }
       const layers = [];
       for (const l of doc.layers) {
         if (FOREIGN.test(l.mediaType ?? '') && !idx.has(blobPath(l.digest))) {
@@ -274,7 +295,7 @@ async function imageLayers(path, idx, platform) {
     const list = (doc.manifests ?? []).filter((x) => (!x.mediaType || MANIFEST_TYPES.has(x.mediaType) || INDEX_TYPES.has(x.mediaType)) && x.platform?.os !== 'unknown' && !x.annotations?.['vnd.docker.reference.type'] && idx.has(blobPath(x.digest)));
     const plats = [...new Set(list.map(platformOf).filter(Boolean))];
     const want = platform ?? DEFAULT_PLATFORM;
-    const pick = list.find((x) => platformOf(x) === want) ?? list.find((x) => `${x.platform?.os}/${x.platform?.architecture}` === want);
+    const pick = list.find((x) => platformOf(x) === want) ?? list.find((x) => samePlatform(platformOf(x), want));
     if (!pick) {
       if (platform || list.length !== 1) throw new Error(`no image for ${want} in this archive (it has: ${plats.join(', ') || 'none'}); pass --platform`);
       desc = list[0];
@@ -305,7 +326,7 @@ export async function readImage(path, opts = {}) {
       const limit = opts.unpackedCap ?? UNPACKED_CAP;
       const cap = new Transform({ transform(chunk, _enc, done) {
         written += chunk.length;
-        done(written > limit ? new Error(`more than ${Math.round(limit / 1024 / MB)} GB once decompressed: decompress it yourself if it really is that large`) : null, chunk);
+        done(written > limit ? new Error(`more than ${Math.round(limit / 1024 / MB)} GB once decompressed: decompress it yourself if it really is that large (and the disk has room)`) : null, chunk);
       } });
       await pipeline(await openStream(path), cap, createWriteStream(tarPath));
       if (await sniff(tarPath) !== 'tar') throw new Error(`${basename(path)} is compressed, but not a tar archive`);
