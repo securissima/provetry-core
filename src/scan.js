@@ -7,6 +7,7 @@ import { loadKev } from './vuln/kev.js';
 import { loadEuvdExploited } from './vuln/euvd.js';
 import { loadEpss, epssOf, EPSS_LIKELY } from './vuln/epss.js';
 import { vexFor } from './vex.js';
+import { osvQueryable } from './purl.js';
 
 const RANK = { critical: 4, high: 3, medium: 2, low: 1, none: 0, unknown: 0 };
 
@@ -23,11 +24,15 @@ export async function scan(ctx, components, opts = {}) {
 
   let affected = new Map();
   try {
-    affected = await queryPurls(ctx, scanned.map((c) => c.purl));
+    // Operating-system packages of a release OSV does not cover are not asked about: a query by bare purl
+    // would match advisories of other releases.
+    affected = await queryPurls(ctx, scanned.map((c) => c.purl).filter(osvQueryable));
     sources.push({ name: 'OSV.dev', ok: true });
   } catch (e) {
     sources.push({ name: 'OSV.dev', ok: false, note: e.code ?? e.message });
   }
+  const unlooked = scanned.filter((c) => !osvQueryable(c.purl));
+  if (unlooked.length) sources.push({ name: 'Operating-system packages', ok: false, note: `${unlooked.length} not looked up: no public advisory database covers their release (e.g. ${unlooked[0].purl.split('?')[0]})` });
   const refs = [...affected.values()].flat();
   const details = await loadDetails(ctx, refs);
   const missingDetails = new Set(refs.map((r) => r.id).filter((id) => !details.has(id)));

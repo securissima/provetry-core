@@ -87,22 +87,25 @@ Maven has no lock file: from `pom.xml`, Provetry reads the direct dependencies (
 ```sh
 docker save -o gateway.tar ghcr.io/acme/gateway:2.4.0     # or podman save; a Docker archive or an OCI layout
 provetry sbom gateway.tar --out sbom.cdx.json
+provetry sbom gateway.tar --platform linux/arm64          # a multi-platform image (default: linux/amd64)
 provetry scan build/tmp/deploy/images/rootfs.tar.gz       # a firmware root filesystem (Yocto, Buildroot, debootstrap)
 ```
 
-The layers are applied in order, with their whiteouts (files deleted by a later layer are not counted). Provetry reads:
+The archive may be compressed whole (gzip or zstd; zstd needs Node.js 22.15 or later). The layers are applied in order, with their whiteouts (files deleted by a later layer are not counted). Provetry reads:
 
-- the operating system's packages: dpkg (Debian, Ubuntu, and distroless images' `status.d`), apk (Alpine) and opkg (OpenWrt, Yocto), with the release from `os-release`;
-- packages installed by language package managers: Python distributions (`*.dist-info`), Node.js packages (`node_modules`), and the lock files present in the image.
+- the operating system's packages: dpkg (Debian, Ubuntu, their derivatives, and distroless images' `status.d`), apk (Alpine, Wolfi, Chainguard) and opkg (OpenWrt, Yocto), with the release from `os-release`;
+- packages installed by language package managers: Python distributions (`*.dist-info`, `*.egg-info`), Node.js packages (`node_modules`), and the lock files present in the image (not those in caches, documentation or test fixtures).
 
-Debian, Ubuntu and Alpine packages are looked up on OSV.dev by release and source package (`Debian:12`, `Ubuntu:22.04:LTS`, `Alpine:v3.19`). opkg packages are listed, but no public advisory database covers them. RPM databases (Red Hat, Rocky, Alma, SUSE, Fedora) are not read yet: the SBOM says so (marked incomplete). Nothing else of the image is kept in memory.
+Debian, Ubuntu and Alpine packages are looked up on OSV.dev by release and source package (`Debian:12`, `Ubuntu:22.04:LTS`, `Alpine:v3.19`), Wolfi and Chainguard packages as such. A derivative (Raspberry Pi OS, Linux Mint) is looked up as the release it follows, which `os-release` names: its own packages are not covered. Nothing else of the image is kept in memory.
 
-For the rest (vendored C libraries, statically linked binaries), generate an SBOM with your build tooling and pass it to `provetry scan`: CycloneDX JSON and SPDX JSON (2.x, and 3.x in JSON-LD) are read.
+What Provetry cannot read is said, and the SBOM and the scan are marked incomplete (`scan --fail-on` then exits 2, never 0): RPM databases (Red Hat, Rocky, Alma, SUSE, Fedora), opkg packages and releases no public advisory database covers (Debian unstable, Alpine edge), a layer missing from the archive, several images in one archive. Save one image per archive.
+
+For the rest (vendored C libraries, statically linked binaries, Java archives inside the image), generate an SBOM with your build tooling or with [Syft](https://github.com/anchore/syft) and pass it to `provetry scan`: CycloneDX JSON and SPDX JSON (2.x, and 3.x in JSON-LD) are read. In the GitHub Action, `image-tool: syft` keeps the generator used before 0.10 (it reads RPM databases, Java archives and Go binaries too, and needs an image name and Docker).
 
 ## SBOM
 
 ```sh
-provetry sbom [dir] [--format cyclonedx|spdx|spdx3] [--name <product>] [--version <v>] [--supplier <company>] [--out <file>]
+provetry sbom [dir | image.tar] [--format cyclonedx|spdx|spdx3] [--name <product>] [--version <v>] [--supplier <company>] [--out <file>] [--platform <os/arch>]
 ```
 
 - Each component carries its [package URL](https://github.com/package-url/purl-spec) and, when the lock file has them, its hashes.
@@ -115,7 +118,7 @@ The CRA does not require you to publish the SBOM: it belongs in your technical d
 ## Vulnerability scan
 
 ```sh
-provetry scan [dir | sbom.json] [--format text|markdown|json|sarif] [--out <file>]
+provetry scan [dir | sbom.json | image.tar] [--format text|markdown|json|sarif] [--out <file>]
               [--vex <file>]... [--vex-template <file>] [--fail-on <level>]
               [--include-dev] [--no-euvd] [--no-epss] [--offline] [--no-cache]
 ```
@@ -250,7 +253,7 @@ jobs:
           sarif_file: ${{ steps.provetry.outputs.sarif }}
 ```
 
-The version is the tag (`v2.4.0` becomes `2.4.0`). Uploads happen on tags only (`upload: always` to upload every run). A re-run of the same tag is fine; any other refusal fails the job. The SBOM, the reachability document and the SARIF report are in the step's outputs; the Markdown report goes to the job summary. With `image:`, reachability is skipped (it reads source code, not images).
+The version is the tag (`v2.4.0` becomes `2.4.0`). Uploads happen on tags only (`upload: always` to upload every run). A re-run of the same tag is fine; any other refusal fails the job. The SBOM, the reachability document and the SARIF report are in the step's outputs; the Markdown report goes to the job summary. With `image:`, reachability is skipped (it reads source code, not images); `platform: linux/arm64` picks the platform of a multi-platform image, and `image-tool: syft` uses Syft instead of Provetry's own reader. Upgrading from 0.9, where Syft read images: Provetry now reads them itself and says what it cannot read (RPM databases, Java archives, Go binaries); if your images rely on those, set `image-tool: syft`.
 
 ### GitLab CI
 

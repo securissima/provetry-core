@@ -221,3 +221,19 @@ test('the exploited-vulnerability catalogues are exported', async () => {
   const kev = await core.loadKev(ctxOf());
   assert.ok(kev instanceof Map && kev.size > 0);
 });
+
+test('scan: operating-system packages of a release OSV does not cover are not asked about, and the scan is incomplete', async () => {
+  const calls = [];
+  const queries = [];
+  const fetch = fakeFetch({ calls });
+  const ctx = { fetchJson: async (url, opts) => { if (url.endsWith('/querybatch')) queries.push(...opts.body.queries); return fetch(url, opts); }, cache: memoryCache(), now: () => new Date('2026-11-07T10:00:00Z') };
+  const components = [
+    { type: 'deb', name: 'bash', version: '5.2', purl: 'pkg:deb/debian/bash@5.2', scope: 'required', sources: ['s'] },
+    { type: 'deb', name: 'zsh', version: '5.9', purl: 'pkg:deb/debian/zsh@5.9?distro=debian-12', scope: 'required', sources: ['s'] },
+    { type: 'npm', name: 'lodash', version: '4.17.20', purl: 'pkg:npm/lodash@4.17.20', scope: 'required', sources: ['s'] },
+  ];
+  const r = await scan(ctx, components, { euvd: false, epss: false });
+  assert.deepEqual(queries.map((q) => q.package.purl ?? `${q.package.ecosystem}/${q.package.name}`), ['Debian:12/zsh', 'pkg:npm/lodash@4.17.20']);
+  assert.equal(r.complete, false);
+  assert.match(r.sources.find((s) => s.name === 'Operating-system packages').note, /1 not looked up/);
+});

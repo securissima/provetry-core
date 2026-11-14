@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 export { collect, findLockFiles, readLockFile, PARSERS } from './lockfiles/index.js';
-export { makePurl, parsePurl, makeOsPurl, purlQualifiers, osvOsPackage } from './purl.js';
+export { makePurl, parsePurl, makeOsPurl, purlQualifiers, osvOsPackage, osvQueryable } from './purl.js';
 export { toCycloneDx, toSpdx, toSpdx3 } from './sbom/write.js';
 export { readSbom } from './sbom/read.js';
 export { readImage } from './image/index.js';

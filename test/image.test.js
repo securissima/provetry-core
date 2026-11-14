@@ -73,7 +73,12 @@ test('a firmware root filesystem (rootfs.tar.gz): dpkg, Python, a lock file', as
     { path: './usr/lib/os-release', data: DEBIAN_OS },
     { path: './etc/os-release', link: '../usr/lib/os-release' },
     { path: './var/lib/dpkg/status', data: DPKG },
-    { path: './usr/lib/python3/dist-packages/requests-2.31.0.dist-info/METADATA', data: 'Metadata-Version: 2.1\nName: requests\nVersion: 2.31.0\n' },
+    { path: './usr/lib/python3/dist-packages/six-1.16.0.egg-info', data: 'Metadata-Version: 1.2\nName: six\nVersion: 1.16.0\n' },
+    { path: './usr/local/lib/python3.11/dist-packages/requests-2.31.0.dist-info/METADATA', data: 'Metadata-Version: 2.1\nName: requests\nVersion: 2.31.0\n' },
+    { path: './usr/local/lib/python3.11/site-packages/legacy-0.9-py3.11.egg-info', data: 'Metadata-Version: 1.1\nName: legacy\nVersion: 0.9\n' },
+    { path: './root/.cache/pip/package-lock.json', data: JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/cached': { version: '9.9.9' } } }) },
+    { path: './opt/app/test/fixtures/package-lock.json', data: JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/fixture': { version: '0.0.1' } } }) },
+    { path: './usr/share/doc/thing/package-lock.json', data: JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/docdep': { version: '1.0.0' } } }) },
     { path: './opt/app/package-lock.json', data: JSON.stringify({ lockfileVersion: 3, packages: { '': { dependencies: { ms: '2.1.3' } }, 'node_modules/ms': { version: '2.1.3' } } }) },
     { path: './opt/app/node_modules/ms/package.json', data: JSON.stringify({ name: 'ms', version: '2.1.3' }) },
   ])));
@@ -83,7 +88,11 @@ test('a firmware root filesystem (rootfs.tar.gz): dpkg, Python, a lock file', as
   assert.ok(purls.includes('pkg:deb/debian/libssl3@3.0.11-1~deb12u2?arch=amd64&distro=debian-12&upstream=openssl'), purls.join('\n'));
   assert.ok(purls.includes('pkg:deb/debian/zlib1g@1%3A1.2.13.dfsg-1?arch=amd64&distro=debian-12&upstream=zlib'), 'epoch encoded, source package kept');
   assert.ok(!purls.some((x) => x.includes('removed-thing')), 'a package removed (config files left) is not installed');
-  assert.ok(purls.includes('pkg:pypi/requests@2.31.0'));
+  assert.ok(purls.includes('pkg:pypi/requests@2.31.0'), 'installed with pip');
+  assert.ok(purls.includes('pkg:pypi/legacy@0.9'), 'an egg-info that is a single file');
+  assert.ok(!purls.some((x) => x.startsWith('pkg:pypi/six@')), 'installed by dpkg: listed once, as the Debian package');
+  assert.ok(!purls.some((x) => /cached|fixture|docdep/.test(x)), 'lock files in caches, test fixtures and documentation describe nothing installed');
+  assert.deepEqual(r.notices, []);
   const ms = r.components.find((c) => c.purl === 'pkg:npm/ms@2.1.3');
   assert.deepEqual(ms.sources.sort(), ['opt/app/node_modules/ms/package.json', 'opt/app/package-lock.json'], 'one component, both places');
   assert.deepEqual(r.errors, []);
@@ -111,14 +120,15 @@ test('a container image saved with docker save: layers in order, whiteouts, an A
     { path: 'l2/layer.tar', data: app },
   ]);
   const r = await readImage(file('image.tar', archive));
-  assert.equal(r.name, 'acme/gateway:4.2.0');
+  assert.equal(r.name, 'acme/gateway');
+  assert.equal(r.version, '4.2.0');
   const purls = r.components.map((c) => c.purl);
   assert.ok(purls.includes('pkg:apk/alpine/libcrypto3@3.1.4-r5?arch=x86_64&distro=3.19.1&upstream=openssl'), purls.join('\n'));
   assert.ok(purls.includes('pkg:apk/alpine/busybox@1.36.1-r15?arch=x86_64&distro=3.19.1'));
   assert.ok(!purls.some((x) => x.includes('old-tool')), 'deleted by a whiteout in a later layer');
   assert.ok(!purls.some((x) => x.includes('/left@')), 'hidden by an opaque directory');
   assert.ok(purls.includes('pkg:npm/kept@2.0.0'));
-  assert.ok(r.notices.some((n) => /RPM package databases are not read yet/.test(n.text)), 'RPM databases are named, not silently skipped');
+  assert.ok(r.notices.some((n) => /RPM package databases are not read yet/.test(n.text) && n.incomplete), 'RPM databases are named, not silently skipped, and the result is incomplete');
 });
 
 test('an OCI image layout in one tar, through a multi-platform index', async () => {
@@ -140,7 +150,9 @@ test('an OCI image layout in one tar, through a multi-platform index', async () 
     { path: `blobs/sha256/${sha(layer)}`, data: layer },
   ]);
   const r = await readImage(file('oci.tar', archive));
-  assert.equal(r.name, 'gateway:4.2.0');
+  assert.equal(r.name, 'gateway');
+  assert.equal(r.version, '4.2.0');
+  assert.deepEqual(r.notices, [], 'the arm64 image is not in the archive: one platform, nothing to choose');
   assert.deepEqual(r.components.map((c) => c.purl), ['pkg:deb/ubuntu/bash@5.1-6ubuntu1.1?arch=amd64&distro=ubuntu-22.04'], 'distroless-style status.d, Ubuntu namespace');
 });
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Known vulnerabilities per component, from OSV.dev (https://osv.dev): one database that aggregates the
 // GitHub advisories, the Python, Go and Rust advisory databases, RubySec, and more. Queried by package URL;
-// operating-system packages (Debian, Ubuntu, Alpine) by ecosystem and release, name and version.
+// operating-system packages (Debian, Ubuntu, Alpine, Wolfi, Chainguard) by ecosystem and release, name and version.
 import { cvss3Score, ratingOf } from './cvss.js';
 import { mapLimit, cacheGet, cacheSet, getJson, CVE_RE } from '../util.js';
 import { parsePurl, fullName, OSV_ECOSYSTEM, osvOsPackage } from '../purl.js';
@@ -57,8 +57,10 @@ function advisoryKey(purl) {
   const p = parsePurl(purl);
   if (!p) return null;
   const os = osvOsPackage(purl);
-  return os ? { p, eco: os.base, name: os.name } : { p, eco: OSV_ECOSYSTEM[p.type], name: fullName(p) };
+  // Operating-system packages: the exact release ("Debian:12"), as one record covers several releases.
+  return os ? { p, eco: os.ecosystem, exact: true, name: os.name } : { p, eco: OSV_ECOSYSTEM[p.type], exact: false, name: fullName(p) };
 }
+const ecoMatches = (k, ecosystem) => (k.exact ? ecosystem === k.eco : ecosystem?.split(':')[0] === k.eco);
 
 /** Full OSV records for the given { id, modified } pairs. Returns Map<id, record>. Records that fail are left out. */
 export async function loadDetails(ctx, refs) {
@@ -111,12 +113,12 @@ export function severityOf(rec) {
 export function fixedVersions(rec, purl) {
   const k = advisoryKey(purl);
   if (!k) return [];
-  const { p, eco, name } = k;
+  const { p, name } = k;
   const norm = (s) => (p.type === 'pypi' ? s.toLowerCase().replace(/[-_.]+/g, '-') : s);
   const fixed = new Set();
   for (const a of rec.affected ?? []) {
     const ap = a.package ?? {};
-    const matches = (ap.purl && parsePurl(ap.purl) && norm(fullName(parsePurl(ap.purl))) === norm(name)) || (ap.ecosystem?.split(':')[0] === eco && norm(ap.name ?? '') === norm(name));
+    const matches = k.exact ? ecoMatches(k, ap.ecosystem) && ap.name === name : (ap.purl && parsePurl(ap.purl) && norm(fullName(parsePurl(ap.purl))) === norm(name)) || (ecoMatches(k, ap.ecosystem) && norm(ap.name ?? '') === norm(name));
     if (!matches) continue;
     for (const r of a.ranges ?? []) for (const e of r.events ?? []) if (e.fixed) fixed.add(e.fixed);
   }
@@ -130,11 +132,11 @@ export function fixedVersions(rec, purl) {
 export function affectedFunctions(rec, purl) {
   const k = advisoryKey(purl);
   if (!k) return [];
-  const { eco, name } = k;
+  const { name } = k;
   const out = new Set();
   for (const a of rec.affected ?? []) {
     const ap = a.package ?? {};
-    if (!((ap.ecosystem?.split(':')[0] === eco && ap.name === name) || (ap.purl && parsePurl(ap.purl) && fullName(parsePurl(ap.purl)) === name))) continue;
+    if (!((ecoMatches(k, ap.ecosystem) && ap.name === name) || (!k.exact && ap.purl && parsePurl(ap.purl) && fullName(parsePurl(ap.purl)) === name))) continue;
     // Kept whole, whatever their form ("<X as Drop>::drop"): dropping one would make the list look shorter than it is.
     for (const f of a.ecosystem_specific?.affects?.functions ?? []) if (typeof f === 'string' && f.length < 500) out.add(f);
   }

@@ -26,8 +26,9 @@ const HELP = `provetry ${VERSION}: SBOM and vulnerability watch for the EU Cyber
 Usage
   provetry sbom  [dir|image.tar]  Write an SBOM from the lock files found in dir (default: .), or from a
                                   container image (docker save, podman save, OCI layout) or a firmware root
-                                  filesystem archive (rootfs.tar, rootfs.tar.gz): Debian, Ubuntu and Alpine
-                                  packages, opkg packages, Python and Node.js packages, lock files
+                                  filesystem archive (rootfs.tar, .tar.gz, .tar.zst): Debian, Ubuntu, Alpine,
+                                  Wolfi and Chainguard packages, opkg packages, Python and Node.js packages,
+                                  lock files
   provetry scan  [dir|sbom.json|image.tar]  List known vulnerabilities, those exploited in the wild first
   provetry reach [dir]            Which vulnerable code your product really uses: function by function for Go
                                   (govulncheck), package by package for npm, PyPI, Cargo, Composer, RubyGems, NuGet, Java
@@ -41,6 +42,7 @@ sbom options
   --version <version>       product version
   --supplier <name>         your company, as it should appear in the SBOM
   --out <file>              write to a file instead of standard output
+  --platform <os/arch>      the platform to read from a multi-platform image (default: linux/amd64)
 
 scan options
   --format text|markdown|json|sarif   default text
@@ -53,6 +55,8 @@ scan options
   --no-epss                 skip the FIRST EPSS lookup (likelihood of exploitation, used to sort)
   --offline                 use cached data only, make no network request
   --no-cache                neither read nor write the cache
+  --name, --version         the product, as for sbom
+  --platform <os/arch>      as for sbom
 
 reach options
   --out <file>              write the OpenVEX document to a file (default: standard output)
@@ -98,7 +102,7 @@ async function emit(text, out) {
   else process.stdout.write(text);
 }
 
-async function loadComponents(target) {
+async function loadComponents(target, opts = {}) {
   const abs = resolve(target);
   const st = await stat(abs).catch(() => fail(`not found: ${target}`));
   if (st.isDirectory()) {
@@ -115,15 +119,15 @@ async function loadComponents(target) {
   // A container image (docker save, podman save, OCI layout) or a firmware root filesystem archive.
   if (await isArchive(abs)) {
     let img;
-    try { img = await readImage(abs); } catch (e) { fail(`${target}: ${e.message}`); }
+    try { img = await readImage(abs, { platform: opts.platform }); } catch (e) { fail(`${target}: ${e.message}`); }
     for (const e of img.errors) process.stderr.write(`provetry: ${clean(e.error)}\n`);
     for (const n of img.notices) process.stderr.write(`provetry: note: ${clean(n.text)}\n`);
-    if (!img.components.length) fail(`${target}: no package database, lock file or installed package found in this archive`);
+    if (!img.components.length && !img.errors.length) fail(`${target}: no package database, lock file or installed package found in this archive`);
     if (img.os?.prettyName) process.stderr.write(`provetry: ${clean(img.os.prettyName)}, ${img.components.length} components\n`);
-    const name = img.name ? img.name.replace(/:[^/:]*$/, '') : basename(abs).replace(/\.(tar(\.(gz|zst))?|tgz)$/i, '');
-    const version = img.name && /:[^/:]+$/.test(img.name) ? img.name.slice(img.name.lastIndexOf(':') + 1) : '';
-    return { components: img.components, name, version, location: relative(process.cwd(), abs) || basename(abs), errors: img.errors, unknownDirect: [], notices: img.notices };
+    const name = img.name || basename(abs).replace(/\.(tar(\.(gz|zst))?|tgz)$/i, '');
+    return { kind: 'image', components: img.components, name, version: img.version, location: relative(process.cwd(), abs) || basename(abs), errors: img.errors, unknownDirect: [], notices: img.notices };
   }
+  if (opts.platform) fail('--platform applies to container images only');
   let json;
   try {
     json = JSON.parse(await readFile(abs, 'utf8'));
@@ -150,13 +154,13 @@ export async function main(argv) {
     const { values, positionals } = parseArgs({
       args: rest,
       allowPositionals: true,
-      options: { format: { type: 'string', default: 'cyclonedx' }, name: { type: 'string' }, version: { type: 'string' }, supplier: { type: 'string' }, out: { type: 'string' } },
+      options: { format: { type: 'string', default: 'cyclonedx' }, name: { type: 'string' }, version: { type: 'string' }, supplier: { type: 'string' }, out: { type: 'string' }, platform: { type: 'string' } },
     });
     if (!['cyclonedx', 'spdx', 'spdx3'].includes(values.format)) fail('--format must be cyclonedx, spdx or spdx3');
     const dir = positionals[0] ?? '.';
     const st = await stat(resolve(dir)).catch(() => null);
     if (!st?.isDirectory() && !(st?.isFile() && await isArchive(resolve(dir)))) fail(`${dir} is neither a directory nor an image or root filesystem archive`);
-    const { components, name, version, errors, unknownDirect, notices } = await loadComponents(dir);
+    const { components, name, version, errors, unknownDirect, notices } = await loadComponents(dir, { platform: values.platform });
     if (errors.length) fail('no SBOM written: fix the files above first, an SBOM must not miss components');
     if (unknownDirect.length) process.stderr.write(`provetry: no manifest says which dependencies are direct for ${unknownDirect.join(', ')}: their top-level dependencies cannot be told apart from the others in the SBOM\n`);
     const product = { name: values.name ?? name, version: values.version ?? (version || undefined), supplier: values.supplier };
@@ -187,6 +191,7 @@ export async function main(argv) {
         'no-cache': { type: 'boolean', default: false },
         name: { type: 'string' },
         version: { type: 'string' },
+        platform: { type: 'string' },
       },
     });
     const fmt = { text: toText, markdown: toMarkdown, json: toJson, sarif: toSarif }[values.format];
@@ -194,7 +199,7 @@ export async function main(argv) {
     if (values['fail-on'] && !['exploited', 'critical', 'high', 'medium', 'low', 'any', 'none'].includes(values['fail-on'])) fail('--fail-on must be exploited, critical, high, medium, low or any');
     if (values.offline && values['no-cache']) fail('--offline needs the cache');
     const target = positionals[0] ?? '.';
-    const { components, name, version, location, errors, notices } = await loadComponents(target);
+    const { kind, components, name, version, location, errors, notices } = await loadComponents(target, { platform: values.platform });
     const vex = [];
     for (const f of values.vex) {
       try {
@@ -218,9 +223,15 @@ export async function main(argv) {
       result.complete = false;
       result.sources.push({ name: 'Maven pom.xml', ok: false, note: `${notices.reduce((s, n) => s + n.missing, 0)} direct dependencies without a resolvable version` });
     }
+    // What an image could not give (an RPM database, a release no advisory database covers…): incomplete too.
+    const gaps = notices.filter((n) => n.incomplete);
+    if (gaps.length) {
+      result.complete = false;
+      result.sources.push({ name: 'Image', ok: false, note: gaps.map((n) => n.text).join(' ') });
+    }
     if (errors.length) {
       result.complete = false;
-      result.sources.push({ name: 'Lock files', ok: false, note: `${errors.length} could not be read` });
+      result.sources.push({ name: kind === 'image' ? 'Image files' : 'Lock files', ok: false, note: `${errors.length} could not be read` });
     }
     const text = values.format === 'sarif' ? JSON.stringify(toSarif(result, { location }), null, 2) + '\n' : fmt(result);
     await emit(text, values.out);

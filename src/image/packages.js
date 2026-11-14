@@ -4,25 +4,63 @@
 // packages installed by language package managers. Each parser takes the text of one database file.
 import { makeOsPurl, makePurl, normalizePypi } from '../purl.js';
 
-/** os-release: { id, idLike, versionId, prettyName }. */
+/** os-release: { id, idLike, versionId, codename, ubuntuCodename, prettyName }. */
 export function parseOsRelease(text) {
   const kv = {};
   for (const line of String(text).split('\n')) {
     const m = /^([A-Z_]+)=(.*)$/.exec(line.trim());
     if (m) kv[m[1]] = m[2].replace(/^["']|["']$/g, '');
   }
-  return { id: (kv.ID ?? '').toLowerCase(), idLike: (kv.ID_LIKE ?? '').toLowerCase().split(/\s+/).filter(Boolean), versionId: kv.VERSION_ID ?? '', prettyName: kv.PRETTY_NAME ?? '' };
+  return {
+    id: (kv.ID ?? '').toLowerCase(),
+    idLike: (kv.ID_LIKE ?? '').toLowerCase().split(/\s+/).filter(Boolean),
+    versionId: kv.VERSION_ID ?? '',
+    codename: (kv.VERSION_CODENAME ?? '').toLowerCase(),
+    ubuntuCodename: (kv.UBUNTU_CODENAME ?? '').toLowerCase(),
+    prettyName: kv.PRETTY_NAME ?? '',
+  };
 }
 
-/** The purl namespace and "distro" qualifier for a release: debian-12, ubuntu-22.04, alpine 3.19.1. */
+// Releases by code name, for derivatives that only say which release they follow.
+const DEBIAN_CODENAMES = { stretch: '9', buster: '10', bullseye: '11', bookworm: '12', trixie: '13', forky: '14' };
+const UBUNTU_CODENAMES = { xenial: '16.04', bionic: '18.04', focal: '20.04', jammy: '22.04', noble: '24.04', oracular: '24.10', plucky: '25.04', questing: '25.10' };
+
+/**
+ * The purl namespace and "distro" qualifier of a release, and whether its packages can be looked up:
+ *  - Debian, Ubuntu, Alpine: by release ("debian-12", "ubuntu-22.04", "3.19.1");
+ *  - their derivatives (Raspberry Pi OS, Linux Mint…) keep their own namespace, with the parent release
+ *    they follow as the distro qualifier ("pkg:deb/raspbian/…?distro=debian-12"): looked up as the parent's;
+ *  - Wolfi and Chainguard: rolling, no release.
+ * `lookup` is false, with a `why`, when no public advisory database covers the release.
+ */
 export function distroOf(os) {
   if (!os?.id) return null;
-  const family = ['debian', 'ubuntu', 'alpine'].includes(os.id) ? os.id : os.idLike.find((x) => ['debian', 'ubuntu', 'alpine'].includes(x)) ?? os.id;
-  // Derivatives (Raspberry Pi OS, Linux Mint…) keep their own name: their packages are not the parent's.
-  const namespace = os.id;
-  const distro = os.versionId ? `${os.id}-${os.versionId}` : '';
-  return { namespace, family, distro };
+  const id = os.id;
+  const label = os.prettyName || id;
+  if (id === 'wolfi' || id === 'chainguard') return { namespace: id, family: id, distro: '', lookup: true, base: id };
+  if (id === 'debian' || id === 'ubuntu') {
+    const v = os.versionId || (id === 'debian' ? DEBIAN_CODENAMES[os.codename] : UBUNTU_CODENAMES[os.codename]) || '';
+    if (!v) return { namespace: id, family: id, distro: '', lookup: false, why: `${label} names no release (testing or unstable): its packages are listed but not looked up` };
+    return { namespace: id, family: id, distro: `${id}-${v}`, lookup: true, base: id };
+  }
+  if (id === 'alpine') {
+    // edge says VERSION_ID=3.21_alpha…: a development snapshot, not a release OSV covers.
+    if (!/^\d+\.\d+(\.\d+)?$/.test(os.versionId)) return { namespace: id, family: id, distro: os.versionId, lookup: false, why: `${label} is not a stable Alpine release (edge): its packages are listed but not looked up` };
+    return { namespace: id, family: id, distro: os.versionId, lookup: true, base: id };
+  }
+  // A derivative: looked up as the release it follows, when it says which.
+  const ubuntu = UBUNTU_CODENAMES[os.ubuntuCodename] ?? (os.idLike.includes('ubuntu') ? UBUNTU_CODENAMES[os.codename] : undefined);
+  if (ubuntu) return { namespace: id, family: 'ubuntu', distro: `ubuntu-${ubuntu}`, lookup: true, base: 'ubuntu', derived: `${label} is looked up as Ubuntu ${ubuntu}: packages of its own are not covered` };
+  const debian = os.idLike.includes('debian') ? DEBIAN_CODENAMES[os.codename] : undefined;
+  if (debian) return { namespace: id, family: 'debian', distro: `debian-${debian}`, lookup: true, base: 'debian', derived: `${label} is looked up as Debian ${debian}: packages of its own are not covered` };
+  const family = ['debian', 'ubuntu', 'alpine'].find((x) => os.idLike.includes(x)) ?? id;
+  return { namespace: id, family, distro: os.versionId ? `${id}-${os.versionId}` : '', lookup: false, why: `no public advisory database covers ${label}: its packages are listed but not looked up` };
 }
+
+/** Whether a dpkg or opkg Status field means the package's files are on disk ("install ok installed", "… unpacked"…). */
+const onDisk = (status) => !status || !/\b(not-installed|config-files)\s*$/.test(status);
+// A binNMU ("+b1") rebuilds the same source: advisories name the source version.
+const sourceVersion = (v) => v.replace(/\+b\d+$/, '');
 
 const paragraphs = (text) => String(text).replace(/\r/g, '').split(/\n\s*\n/);
 
@@ -39,9 +77,12 @@ export function parseDpkgStatus(text, source, dist) {
     }
     if (!f.package || !f.version) continue;
     // status.d files have no Status field (installed by construction); a status file lists removed packages too.
-    if (f.status && !/\binstalled$/.test(f.status)) continue;
+    if (!onDisk(f.status)) continue;
+    // The source package, with its version when it differs: advisories are written against the source.
     const src = /^(\S+)(?:\s+\(([^)]+)\))?/.exec(f.source ?? '');
-    const upstream = src && src[1] !== f.package ? src[1] : '';
+    const srcName = src?.[1] ?? f.package;
+    const srcVer = src?.[2] ?? sourceVersion(f.version);
+    const upstream = srcName !== f.package || srcVer !== f.version ? (srcVer !== f.version ? `${srcName}@${srcVer}` : srcName) : '';
     const ns = dist?.namespace ?? 'debian';
     out.push({
       type: 'deb', name: f.package, version: f.version, scope: 'required', sources: [source],
@@ -75,7 +116,7 @@ export function parseOpkgStatus(text, source, dist) {
   for (const para of paragraphs(text)) {
     const f = {};
     for (const line of para.split('\n')) { const i = line.indexOf(':'); if (i > 0 && !/^\s/.test(line)) f[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim(); }
-    if (!f.package || !f.version || (f.status && !/\binstalled$/.test(f.status))) continue;
+    if (!f.package || !f.version || !onDisk(f.status)) continue;
     out.push({
       type: 'opkg', name: f.package, version: f.version, scope: 'required', sources: [source],
       purl: makeOsPurl('opkg', dist?.namespace || 'openwrt', f.package, f.version, { arch: f.architecture, distro: dist?.distro }),

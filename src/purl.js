@@ -83,25 +83,48 @@ export function makeOsPurl(type, namespace, name, version, qualifiers = {}) {
   return `pkg:${type}/${enc(namespace)}/${enc(name)}@${enc(version)}${q ? `?${q}` : ''}`;
 }
 
-const OS_ECOSYSTEM = { debian: 'Debian', ubuntu: 'Ubuntu', alpine: 'Alpine' };
+const OS_ECOSYSTEM = { debian: 'Debian', ubuntu: 'Ubuntu', alpine: 'Alpine', wolfi: 'Wolfi', chainguard: 'Chainguard' };
 
 /**
  * How OSV.dev names the ecosystem of an operating-system package, with its release ("Debian:12",
- * "Ubuntu:22.04:LTS", "Alpine:v3.19"), and the package name advisories use (the source package for
- * Debian and Ubuntu). Null for other purls, or when the release is unknown.
+ * "Ubuntu:22.04:LTS", "Alpine:v3.19", "Wolfi"), and the package name and version advisories use (the
+ * source package for Debian and Ubuntu, from the `upstream` qualifier: "openssl" or "zlib@1:1.2.13.dfsg-1").
+ * A derivative (pkg:deb/raspbian/…?distro=debian-12) is looked up as the release its distro qualifier names.
+ * Null for other purls, or when the release is unknown.
  */
 export function osvOsPackage(purl) {
   const p = parsePurl(purl);
   if (!p || !p.version || !['deb', 'apk'].includes(p.type)) return null;
   const ns = (p.namespace ?? '').toLowerCase();
-  const base = OS_ECOSYSTEM[ns];
-  if (!base) return null;
   const q = purlQualifiers(purl);
-  const release = String(q.distro ?? '').replace(new RegExp(`^${ns}-`), '');
-  if (!release) return null;
+  const distro = String(q.distro ?? '');
+  let family = OS_ECOSYSTEM[ns] ? ns : null;
+  let release = distro;
+  if (p.type === 'deb') {
+    const m = /^(debian|ubuntu)-(.+)$/.exec(distro);
+    if (!m || (family && family !== m[1])) return null;
+    [, family, release] = m;
+  } else if (family === 'wolfi' || family === 'chainguard') {
+    release = '';
+  } else if (family !== 'alpine' || !/^\d+\.\d+(\.\d+)?$/.test(release)) {
+    return null;
+  }
   let ecosystem;
-  if (ns === 'debian') ecosystem = `Debian:${release.split('.')[0]}`;
-  else if (ns === 'ubuntu') { const [y, m] = release.split('.').map(Number); ecosystem = `Ubuntu:${release}${m === 4 && y % 2 === 0 ? ':LTS' : ''}`; }
-  else ecosystem = `Alpine:v${release.split('.').slice(0, 2).join('.')}`;
-  return { ecosystem, base, name: q.upstream || p.name, version: p.version };
+  if (family === 'debian') ecosystem = `Debian:${release.split('.')[0]}`;
+  else if (family === 'ubuntu') { const [y, m] = release.split('.').map(Number); ecosystem = `Ubuntu:${release}${m === 4 && y % 2 === 0 ? ':LTS' : ''}`; }
+  else if (family === 'alpine') ecosystem = `Alpine:v${release.split('.').slice(0, 2).join('.')}`;
+  else ecosystem = OS_ECOSYSTEM[family];
+  const up = String(q.upstream ?? '');
+  const at = up.indexOf('@');
+  const name = (at > 0 ? up.slice(0, at) : up) || p.name;
+  const version = at > 0 ? up.slice(at + 1) : p.version;
+  return { ecosystem, base: OS_ECOSYSTEM[family], name, version };
+}
+
+/** Whether OSV.dev can be asked about a purl: operating-system packages only with a release it covers. */
+export function osvQueryable(purl) {
+  const p = parsePurl(purl);
+  if (!p) return true;   // as before: OSV says what it makes of it
+  if (['deb', 'apk', 'opkg', 'rpm'].includes(p.type)) return Boolean(osvOsPackage(purl));
+  return true;
 }

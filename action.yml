@@ -16,7 +16,13 @@ inputs:
     description: Version of this release. Default, the tag being built (v2.4.0 → 2.4.0), else the short commit.
     default: ""
   image:
-    description: "A container image to describe instead of the lock files: an image name (pulled if needed, then saved with docker save), e.g. ghcr.io/acme/gateway:2.4.0, or the path of an image archive or of a firmware root filesystem archive (rootfs.tar, rootfs.tar.gz). Provetry reads its packages itself."
+    description: "A container image to describe instead of the lock files: an image name (pulled if needed, then saved with docker save), e.g. ghcr.io/acme/gateway:2.4.0, or the path of an image archive or of a firmware root filesystem archive (rootfs.tar, .tar.gz, .tar.zst)."
+    default: ""
+  image-tool:
+    description: "Who reads the image: provetry (the default: Debian, Ubuntu, Alpine, Wolfi, opkg packages, Python and Node.js packages, lock files; no Docker daemon needed for an archive) or syft (the generator used before 0.10: also RPM databases, Java archives and Go binaries; image names only)."
+    default: provetry
+  platform:
+    description: "The platform to read from a multi-platform image, e.g. linux/arm64 (default: linux/amd64)."
     default: ""
   reachability:
     description: "auto: tell used from never-used vulnerable code (govulncheck for Go modules, import analysis for npm, PyPI, Cargo, Composer, RubyGems, NuGet, Java). off: skip."
@@ -93,24 +99,57 @@ runs:
       run: node "$GITHUB_ACTION_PATH/src/cli.js" sbom "$P_PATH" --name "$P_NAME" --version "$P_VERSION" --out "$P_OUT"
 
     - name: SBOM of the container image or firmware
-      if: inputs.image != ''
+      if: inputs.image != '' && inputs.image-tool != 'syft'
       shell: bash
       env:
         P_IMAGE: ${{ inputs.image }}
+        P_TOOL: ${{ inputs.image-tool }}
+        P_PLATFORM: ${{ inputs.platform }}
         P_NAME: ${{ steps.files.outputs.name }}
         P_VERSION: ${{ steps.files.outputs.version }}
         P_OUT: ${{ steps.files.outputs.sbom }}
       run: |
         set -euo pipefail
+        if [ "$P_TOOL" != "provetry" ]; then echo "::error::Provetry: image-tool must be provetry or syft"; exit 2; fi
+        plat=()
+        if [ -n "$P_PLATFORM" ]; then
+          if ! [[ "$P_PLATFORM" =~ ^[a-z0-9]+/[a-z0-9]+(/[a-z0-9]+)?$ ]]; then echo "::error::Provetry: '$P_PLATFORM' is not a platform such as linux/arm64"; exit 2; fi
+          plat=(--platform "$P_PLATFORM")
+        fi
         if [ -f "$P_IMAGE" ]; then
           archive="$P_IMAGE"
         else
           if ! [[ "$P_IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$ ]]; then echo "::error::Provetry: '$P_IMAGE' is neither a file nor an image name"; exit 2; fi
-          docker image inspect "$P_IMAGE" >/dev/null 2>&1 || docker pull "$P_IMAGE"
+          # docker save writes the image for the platform it pulled: pull the one asked for.
+          if [ -n "$P_PLATFORM" ]; then docker pull --platform "$P_PLATFORM" "$P_IMAGE"
+          else docker image inspect "$P_IMAGE" >/dev/null 2>&1 || docker pull "$P_IMAGE"; fi
           archive="$RUNNER_TEMP/provetry/image.tar"
           docker save -o "$archive" "$P_IMAGE"
         fi
-        node "$GITHUB_ACTION_PATH/src/cli.js" sbom "$archive" --name "$P_NAME" --version "$P_VERSION" --out "$P_OUT"
+        node "$GITHUB_ACTION_PATH/src/cli.js" sbom "$archive" ${plat[@]+"${plat[@]}"} --name "$P_NAME" --version "$P_VERSION" --out "$P_OUT"
+
+    # The generator used before 0.10, kept for what Provetry does not read yet (RPM, Java archives, Go binaries).
+    - name: Install Syft
+      if: inputs.image != '' && inputs.image-tool == 'syft'
+      id: syft
+      uses: anchore/sbom-action/download-syft@v0
+
+    - name: SBOM of the container image (Syft)
+      if: inputs.image != '' && inputs.image-tool == 'syft'
+      shell: bash
+      env:
+        SYFT: ${{ steps.syft.outputs.cmd }}
+        P_IMAGE: ${{ inputs.image }}
+        P_PLATFORM: ${{ inputs.platform }}
+        P_OUT: ${{ steps.files.outputs.sbom }}
+      run: |
+        set -euo pipefail
+        plat=()
+        if [ -n "$P_PLATFORM" ]; then
+          if ! [[ "$P_PLATFORM" =~ ^[a-z0-9]+/[a-z0-9]+(/[a-z0-9]+)?$ ]]; then echo "::error::Provetry: '$P_PLATFORM' is not a platform such as linux/arm64"; exit 2; fi
+          plat=(--platform "$P_PLATFORM")
+        fi
+        "$SYFT" "$P_IMAGE" ${plat[@]+"${plat[@]}"} -o "cyclonedx-json=$P_OUT"
 
     # Reachability reads the source; it says nothing about the other binaries an image may contain.
     # govulncheck is installed in a step of its own, without the API key in its environment.
