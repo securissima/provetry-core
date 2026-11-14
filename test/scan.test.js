@@ -254,3 +254,11 @@ test('scan: Syft-style Alpine purls are looked up; RPM packages are said not to 
   assert.equal(r.complete, false);
   assert.match(r.sources.find((s) => s.name === 'Operating-system packages').note, /pkg:rpm\/redhat\/bash/);
 });
+
+test('scan: a derivative is looked up as its parent, approximately: a lasting gap', async () => {
+  const r = await scan(ctxOf(), [{ type: 'deb', name: 'bash', version: '5.2', purl: 'pkg:deb/raspbian/bash@5.2?distro=debian-12', scope: 'required', sources: ['s'] }], { euvd: false, epss: false });
+  const src = r.sources.find((s) => s.name === 'Derivative distributions');
+  assert.match(src.note, /raspbian as Debian:12/);
+  assert.equal(r.complete, false);
+  assert.equal(r.answered, true);
+});

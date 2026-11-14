@@ -121,7 +121,7 @@ export function osvOsPackage(purl) {
   const at = up.indexOf('@');
   const name = (at > 0 ? up.slice(0, at) : up) || p.name;
   const version = at > 0 ? up.slice(at + 1) : p.version;
-  return { ecosystem, base: OS_ECOSYSTEM[family], name, version };
+  return { ecosystem, base: OS_ECOSYSTEM[family], family, name, version };
 }
 
 /** Whether OSV.dev can be asked about a purl: operating-system packages only with a release it covers. */

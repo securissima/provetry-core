@@ -7,7 +7,7 @@ import { loadKev } from './vuln/kev.js';
 import { loadEuvdExploited } from './vuln/euvd.js';
 import { loadEpss, epssOf, EPSS_LIKELY } from './vuln/epss.js';
 import { vexFor } from './vex.js';
-import { osvQueryable } from './purl.js';
+import { osvQueryable, osvOsPackage } from './purl.js';
 
 const RANK = { critical: 4, high: 3, medium: 2, low: 1, none: 0, unknown: 0 };
 
@@ -34,6 +34,13 @@ export async function scan(ctx, components, opts = {}) {
   const unlooked = scanned.filter((c) => !osvQueryable(c.purl));
   // A lasting gap, not a source that failed to answer: trying again changes nothing.
   if (unlooked.length) sources.push({ name: 'Operating-system packages', ok: false, lasting: true, note: `${unlooked.length} not looked up: no public advisory database covers their release (e.g. ${unlooked[0].purl.split('?')[0]})` });
+  // A derivative's packages (pkg:deb/raspbian/…?distro=debian-12) are looked up as its parent's: approximate,
+  // as its own packages are not covered and its rebuilt versions compare only roughly with the parent's fixes.
+  const derived = scanned.filter((c) => { const os = osvQueryable(c.purl) && osvOsPackage(c.purl); return os && os.family !== String(c.purl).split('/')[1]?.toLowerCase(); });
+  if (derived.length) {
+    const as = [...new Set(derived.map((c) => `${String(c.purl).split('/')[1]} as ${osvOsPackage(c.purl).ecosystem}`))].join(', ');
+    sources.push({ name: 'Derivative distributions', ok: false, lasting: true, note: `${derived.length} looked up approximately (${as}): their own packages are not covered, and rebuilt versions compare only roughly with the parent's fixes` });
+  }
   const refs = [...affected.values()].flat();
   const details = await loadDetails(ctx, refs);
   const missingDetails = new Set(refs.map((r) => r.id).filter((id) => !details.has(id)));
