@@ -62,3 +62,46 @@ export function fullName(p) {
   if (!p.namespace) return p.name;
   return p.type === 'maven' ? `${p.namespace}:${p.name}` : `${p.namespace}/${p.name}`;
 }
+
+// ---------- Operating-system packages (container images, firmware root filesystems) ----------
+
+/** The qualifiers of a purl ("?arch=amd64&distro=debian-12"), decoded. */
+export function purlQualifiers(purl) {
+  const q = String(purl).split('#')[0].split('?')[1];
+  const out = {};
+  if (!q) return out;
+  for (const kv of q.split('&')) {
+    const eq = kv.indexOf('=');
+    if (eq > 0) out[kv.slice(0, eq).toLowerCase()] = decodeURIComponent(kv.slice(eq + 1));
+  }
+  return out;
+}
+
+/** A purl for an operating-system package: pkg:deb/debian/openssl@3.0.11-1~deb12u2?arch=amd64&distro=debian-12. */
+export function makeOsPurl(type, namespace, name, version, qualifiers = {}) {
+  const q = Object.entries(qualifiers).filter(([, v]) => v).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${k}=${enc(v)}`).join('&');
+  return `pkg:${type}/${enc(namespace)}/${enc(name)}@${enc(version)}${q ? `?${q}` : ''}`;
+}
+
+const OS_ECOSYSTEM = { debian: 'Debian', ubuntu: 'Ubuntu', alpine: 'Alpine' };
+
+/**
+ * How OSV.dev names the ecosystem of an operating-system package, with its release ("Debian:12",
+ * "Ubuntu:22.04:LTS", "Alpine:v3.19"), and the package name advisories use (the source package for
+ * Debian and Ubuntu). Null for other purls, or when the release is unknown.
+ */
+export function osvOsPackage(purl) {
+  const p = parsePurl(purl);
+  if (!p || !p.version || !['deb', 'apk'].includes(p.type)) return null;
+  const ns = (p.namespace ?? '').toLowerCase();
+  const base = OS_ECOSYSTEM[ns];
+  if (!base) return null;
+  const q = purlQualifiers(purl);
+  const release = String(q.distro ?? '').replace(new RegExp(`^${ns}-`), '');
+  if (!release) return null;
+  let ecosystem;
+  if (ns === 'debian') ecosystem = `Debian:${release.split('.')[0]}`;
+  else if (ns === 'ubuntu') { const [y, m] = release.split('.').map(Number); ecosystem = `Ubuntu:${release}${m === 4 && y % 2 === 0 ? ':LTS' : ''}`; }
+  else ecosystem = `Alpine:v${release.split('.').slice(0, 2).join('.')}`;
+  return { ecosystem, base, name: q.upstream || p.name, version: p.version };
+}

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Known vulnerabilities per component, from OSV.dev (https://osv.dev): one database that aggregates the
-// GitHub advisories, the Python, Go and Rust advisory databases, RubySec, and more. Queried by package URL.
+// GitHub advisories, the Python, Go and Rust advisory databases, RubySec, and more. Queried by package URL;
+// operating-system packages (Debian, Ubuntu, Alpine) by ecosystem and release, name and version.
 import { cvss3Score, ratingOf } from './cvss.js';
 import { mapLimit, cacheGet, cacheSet, getJson, CVE_RE } from '../util.js';
-import { parsePurl, fullName, OSV_ECOSYSTEM } from '../purl.js';
+import { parsePurl, fullName, OSV_ECOSYSTEM, osvOsPackage } from '../purl.js';
 
 export const OSV_API = 'https://api.osv.dev/v1';
 const BATCH = 1000;
@@ -24,7 +25,7 @@ export async function queryPurls(ctx, purls) {
   }
   for (let i = 0; i < missing.length; i += BATCH) {
     const batch = missing.slice(i, i + BATCH);
-    const { status, json } = await getJson(ctx, `${OSV_API}/querybatch`, { method: 'POST', body: { queries: batch.map((purl) => ({ package: { purl } })) } });
+    const { status, json } = await getJson(ctx, `${OSV_API}/querybatch`, { method: 'POST', body: { queries: batch.map(osvQuery) } });
     if (status !== 200 || !Array.isArray(json?.results)) throw new Error(`OSV HTTP ${status}`);
     for (let j = 0; j < batch.length; j++) {
       const r = json.results[j] ?? {};
@@ -33,7 +34,7 @@ export async function queryPurls(ctx, purls) {
       let token = r.next_page_token;
       for (let n = 0; token; n++) {
         if (n >= 50) throw new Error(`OSV: too many result pages for ${batch[j]}`);
-        const more = await getJson(ctx, `${OSV_API}/query`, { method: 'POST', body: { package: { purl: batch[j] }, page_token: token } });
+        const more = await getJson(ctx, `${OSV_API}/query`, { method: 'POST', body: { ...osvQuery(batch[j]), page_token: token } });
         if (more.status !== 200) throw new Error(`OSV HTTP ${more.status}`);
         vulns = vulns.concat((more.json?.vulns ?? []).map((v) => ({ id: v.id, modified: v.modified ?? '' })));
         token = more.json?.next_page_token;
@@ -43,6 +44,20 @@ export async function queryPurls(ctx, purls) {
     }
   }
   return out;
+}
+
+/** One OSV query: by purl, or for an operating-system package by ecosystem, name and version. */
+export function osvQuery(purl) {
+  const os = osvOsPackage(purl);
+  return os ? { package: { name: os.name, ecosystem: os.ecosystem }, version: os.version } : { package: { purl } };
+}
+
+/** The ecosystem and name advisories use for a component (OSV spelling). */
+function advisoryKey(purl) {
+  const p = parsePurl(purl);
+  if (!p) return null;
+  const os = osvOsPackage(purl);
+  return os ? { p, eco: os.base, name: os.name } : { p, eco: OSV_ECOSYSTEM[p.type], name: fullName(p) };
 }
 
 /** Full OSV records for the given { id, modified } pairs. Returns Map<id, record>. Records that fail are left out. */
@@ -94,10 +109,9 @@ export function severityOf(rec) {
 
 /** Versions that fix the record for this component, read from its affected ranges. */
 export function fixedVersions(rec, purl) {
-  const p = parsePurl(purl);
-  if (!p) return [];
-  const eco = OSV_ECOSYSTEM[p.type];
-  const name = fullName(p);
+  const k = advisoryKey(purl);
+  if (!k) return [];
+  const { p, eco, name } = k;
   const norm = (s) => (p.type === 'pypi' ? s.toLowerCase().replace(/[-_.]+/g, '-') : s);
   const fixed = new Set();
   for (const a of rec.affected ?? []) {
@@ -114,10 +128,9 @@ export function fixedVersions(rec, purl) {
  * (`ecosystem_specific.affects.functions`, full paths such as "smallvec::SmallVec::insert_many").
  */
 export function affectedFunctions(rec, purl) {
-  const p = parsePurl(purl);
-  if (!p) return [];
-  const eco = OSV_ECOSYSTEM[p.type];
-  const name = fullName(p);
+  const k = advisoryKey(purl);
+  if (!k) return [];
+  const { eco, name } = k;
   const out = new Set();
   for (const a of rec.affected ?? []) {
     const ap = a.package ?? {};

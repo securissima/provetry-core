@@ -16,7 +16,7 @@ inputs:
     description: Version of this release. Default, the tag being built (v2.4.0 → 2.4.0), else the short commit.
     default: ""
   image:
-    description: A container image to describe instead of the lock files (generated with Syft), e.g. ghcr.io/acme/gateway:2.4.0.
+    description: "A container image to describe instead of the lock files: an image name (pulled if needed, then saved with docker save), e.g. ghcr.io/acme/gateway:2.4.0, or the path of an image archive or of a firmware root filesystem archive (rootfs.tar, rootfs.tar.gz). Provetry reads its packages itself."
     default: ""
   reachability:
     description: "auto: tell used from never-used vulnerable code (govulncheck for Go modules, import analysis for npm, PyPI, Cargo, Composer, RubyGems, NuGet, Java). off: skip."
@@ -92,19 +92,25 @@ runs:
         P_OUT: ${{ steps.files.outputs.sbom }}
       run: node "$GITHUB_ACTION_PATH/src/cli.js" sbom "$P_PATH" --name "$P_NAME" --version "$P_VERSION" --out "$P_OUT"
 
-    - name: Install Syft
-      if: inputs.image != ''
-      id: syft
-      uses: anchore/sbom-action/download-syft@v0
-
-    - name: SBOM of the container image
+    - name: SBOM of the container image or firmware
       if: inputs.image != ''
       shell: bash
       env:
-        SYFT: ${{ steps.syft.outputs.cmd }}
         P_IMAGE: ${{ inputs.image }}
+        P_NAME: ${{ steps.files.outputs.name }}
+        P_VERSION: ${{ steps.files.outputs.version }}
         P_OUT: ${{ steps.files.outputs.sbom }}
-      run: '"$SYFT" "$P_IMAGE" -o "cyclonedx-json=$P_OUT"'
+      run: |
+        set -euo pipefail
+        if [ -f "$P_IMAGE" ]; then
+          archive="$P_IMAGE"
+        else
+          if ! [[ "$P_IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$ ]]; then echo "::error::Provetry: '$P_IMAGE' is neither a file nor an image name"; exit 2; fi
+          docker image inspect "$P_IMAGE" >/dev/null 2>&1 || docker pull "$P_IMAGE"
+          archive="$RUNNER_TEMP/provetry/image.tar"
+          docker save -o "$archive" "$P_IMAGE"
+        fi
+        node "$GITHUB_ACTION_PATH/src/cli.js" sbom "$archive" --name "$P_NAME" --version "$P_VERSION" --out "$P_OUT"
 
     # Reachability reads the source; it says nothing about the other binaries an image may contain.
     # govulncheck is installed in a step of its own, without the API key in its environment.

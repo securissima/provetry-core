@@ -80,7 +80,24 @@ A lock file that cannot be read stops `provetry sbom` (an SBOM must not silently
 
 Maven has no lock file: from `pom.xml`, Provetry reads the direct dependencies (the minimum the CRA asks of an SBOM), with the properties and `dependencyManagement` of the file and of its parents found in the repository, and of profiles active by default. It says what it could not resolve (versions set by a parent POM or an imported BOM outside the repository, which only Maven resolves), in the output, in the scan report (a scan with unresolved direct dependencies is incomplete) and in the SBOM itself (CycloneDX `compositions` marked `incomplete`, an SPDX comment, and a dependency relationship marked `incomplete` in SPDX 3). POMs of tests, templates and unpacked jars (`src/test`, `src/it`, `src/main/resources`, `META-INF`) are not read. With `--fail-on`, a scan with unresolved direct dependencies exits 2 (a gate does not pass on missing data, even through an SBOM written earlier, which keeps the information): for a Maven gate, pass the SBOM of the CycloneDX Maven plugin. For the full tree, add the [CycloneDX Maven plugin](https://github.com/CycloneDX/cyclonedx-maven-plugin) to the build and pass its SBOM. With Gradle, turn on [dependency locking](https://docs.gradle.org/current/userguide/dependency_locking.html): `gradle.lockfile` lists every resolved component (the older `gradle/dependency-locks/*.lockfile` too). What ships is what is in a runtime classpath; test, compile-only, annotation-processor and linter configurations, debug-only variants (when release variants exist) and the build script are development dependencies.
 
-For what lock files cannot see (container images, firmware, vendored C libraries), generate an SBOM with your build tooling, for example [Syft](https://github.com/anchore/syft), and pass it to `provetry scan`: CycloneDX JSON and SPDX JSON (2.x, and 3.x in JSON-LD) are read.
+### Container images and firmware
+
+`provetry sbom` and `provetry scan` also read a container image or a firmware root filesystem, without running it:
+
+```sh
+docker save -o gateway.tar ghcr.io/acme/gateway:2.4.0     # or podman save; a Docker archive or an OCI layout
+provetry sbom gateway.tar --out sbom.cdx.json
+provetry scan build/tmp/deploy/images/rootfs.tar.gz       # a firmware root filesystem (Yocto, Buildroot, debootstrap)
+```
+
+The layers are applied in order, with their whiteouts (files deleted by a later layer are not counted). Provetry reads:
+
+- the operating system's packages: dpkg (Debian, Ubuntu, and distroless images' `status.d`), apk (Alpine) and opkg (OpenWrt, Yocto), with the release from `os-release`;
+- packages installed by language package managers: Python distributions (`*.dist-info`), Node.js packages (`node_modules`), and the lock files present in the image.
+
+Debian, Ubuntu and Alpine packages are looked up on OSV.dev by release and source package (`Debian:12`, `Ubuntu:22.04:LTS`, `Alpine:v3.19`). opkg packages are listed, but no public advisory database covers them. RPM databases (Red Hat, Rocky, Alma, SUSE, Fedora) are not read yet: the SBOM says so (marked incomplete). Nothing else of the image is kept in memory.
+
+For the rest (vendored C libraries, statically linked binaries), generate an SBOM with your build tooling and pass it to `provetry scan`: CycloneDX JSON and SPDX JSON (2.x, and 3.x in JSON-LD) are read.
 
 ## SBOM
 
@@ -226,7 +243,7 @@ jobs:
           # Optional: upload each release to Provetry (API key from Settings, product id from its page).
           api-key: ${{ secrets.PROVETRY_API_KEY }}
           product-id: 00000000-0000-0000-0000-000000000000
-          # image: ghcr.io/acme/gateway:${{ github.ref_name }}   # describe a container image instead (Syft)
+          # image: ghcr.io/acme/gateway:${{ github.ref_name }}   # describe a container image (or rootfs.tar.gz) instead
       - uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
@@ -269,7 +286,7 @@ Your source code and lock files never leave your machine. `--no-euvd` skips ENIS
 
 ## Limitations
 
-- Lock files only describe dependencies managed by a package manager. Code copied into your repository, system libraries, and what a container image brings in are not seen: scan an SBOM from your build for those.
+- Lock files only describe dependencies managed by a package manager. Code copied into your repository and system libraries are not seen: describe the container image or the root filesystem you ship (see above), or scan an SBOM from your build. In an image, RPM packages and statically linked binaries are not read yet.
 - A known vulnerability in a dependency is a lead, not a verdict: whether it can be exploited in your product depends on how you use it. That is what VEX is for.
 - CVSS 4.0 vectors are not computed; their severity comes from the advisory.
 - `requirements.txt` gives exact versions only on `==` lines; others are skipped, and `-r` includes are not followed. Prefer a real lock file.

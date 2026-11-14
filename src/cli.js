@@ -5,6 +5,7 @@ import { readFile, writeFile, stat } from 'node:fs/promises';
 import { resolve, basename, relative, join } from 'node:path';
 import { collect } from './lockfiles/index.js';
 import { readSbom } from './sbom/read.js';
+import { readImage, isArchive } from './image/index.js';
 import { toCycloneDx, toSpdx, toSpdx3 } from './sbom/write.js';
 import { scan, reachesThreshold } from './scan.js';
 import { readVex, vexTemplate } from './vex.js';
@@ -23,8 +24,11 @@ import { VERSION } from './version.js';
 const HELP = `provetry ${VERSION}: SBOM and vulnerability watch for the EU Cyber Resilience Act
 
 Usage
-  provetry sbom  [dir]            Write an SBOM from the lock files found in dir (default: .)
-  provetry scan  [dir|sbom.json]  List known vulnerabilities, those exploited in the wild first
+  provetry sbom  [dir|image.tar]  Write an SBOM from the lock files found in dir (default: .), or from a
+                                  container image (docker save, podman save, OCI layout) or a firmware root
+                                  filesystem archive (rootfs.tar, rootfs.tar.gz): Debian, Ubuntu and Alpine
+                                  packages, opkg packages, Python and Node.js packages, lock files
+  provetry scan  [dir|sbom.json|image.tar]  List known vulnerabilities, those exploited in the wild first
   provetry reach [dir]            Which vulnerable code your product really uses: function by function for Go
                                   (govulncheck), package by package for npm, PyPI, Cargo, Composer, RubyGems, NuGet, Java
   provetry eol   [dir|sbom.json]  Components whose support ends, before your own support period does
@@ -108,11 +112,23 @@ async function loadComponents(target) {
     for (const c of components) c.sources = c.sources.map(rel);
     return { components, name: basename(abs), version: '', location: rel(files[0]), errors, unknownDirect: unknownDirect.map(rel), notices: notices ?? [] };
   }
+  // A container image (docker save, podman save, OCI layout) or a firmware root filesystem archive.
+  if (await isArchive(abs)) {
+    let img;
+    try { img = await readImage(abs); } catch (e) { fail(`${target}: ${e.message}`); }
+    for (const e of img.errors) process.stderr.write(`provetry: ${clean(e.error)}\n`);
+    for (const n of img.notices) process.stderr.write(`provetry: note: ${clean(n.text)}\n`);
+    if (!img.components.length) fail(`${target}: no package database, lock file or installed package found in this archive`);
+    if (img.os?.prettyName) process.stderr.write(`provetry: ${clean(img.os.prettyName)}, ${img.components.length} components\n`);
+    const name = img.name ? img.name.replace(/:[^/:]*$/, '') : basename(abs).replace(/\.(tar(\.(gz|zst))?|tgz)$/i, '');
+    const version = img.name && /:[^/:]+$/.test(img.name) ? img.name.slice(img.name.lastIndexOf(':') + 1) : '';
+    return { components: img.components, name, version, location: relative(process.cwd(), abs) || basename(abs), errors: img.errors, unknownDirect: [], notices: img.notices };
+  }
   let json;
   try {
     json = JSON.parse(await readFile(abs, 'utf8'));
   } catch {
-    fail(`${target} is not a JSON file`);
+    fail(`${target} is neither a JSON SBOM nor an image or root filesystem archive`);
   }
   const s = readSbom(json);
   for (const n of s.notices ?? []) process.stderr.write(`provetry: note: ${clean(n.text)}\n`);
@@ -139,11 +155,11 @@ export async function main(argv) {
     if (!['cyclonedx', 'spdx', 'spdx3'].includes(values.format)) fail('--format must be cyclonedx, spdx or spdx3');
     const dir = positionals[0] ?? '.';
     const st = await stat(resolve(dir)).catch(() => null);
-    if (!st?.isDirectory()) fail(`${dir} is not a directory`);
-    const { components, name, errors, unknownDirect, notices } = await loadComponents(dir);
-    if (errors.length) fail('no SBOM written: fix the lock files above first, an SBOM must not miss components');
+    if (!st?.isDirectory() && !(st?.isFile() && await isArchive(resolve(dir)))) fail(`${dir} is neither a directory nor an image or root filesystem archive`);
+    const { components, name, version, errors, unknownDirect, notices } = await loadComponents(dir);
+    if (errors.length) fail('no SBOM written: fix the files above first, an SBOM must not miss components');
     if (unknownDirect.length) process.stderr.write(`provetry: no manifest says which dependencies are direct for ${unknownDirect.join(', ')}: their top-level dependencies cannot be told apart from the others in the SBOM\n`);
-    const product = { name: values.name ?? name, version: values.version, supplier: values.supplier };
+    const product = { name: values.name ?? name, version: values.version ?? (version || undefined), supplier: values.supplier };
     // What the files could not give (Maven's transitive tree, unresolved versions) is written in the SBOM too.
     const incomplete = notices.map((n) => n.text);
     const unresolved = notices.reduce((s, n) => s + (n.missing ?? 0), 0);
