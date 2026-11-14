@@ -1,4 +1,4 @@
-# CI de sécurité commune (Enigmacker/securite-ci, v1.2) : npm audit, gitleaks, osv-scanner, Semgrep, tests.
+# CI de sécurité commune (securissima/securite-ci-securissima, v1.2) : npm audit, gitleaks, osv-scanner, Semgrep, tests.
 name: security
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
   contents: read
 jobs:
   security:
-    uses: Enigmacker/securite-ci/.github/workflows/security.yml@9b31bb6fcb0cd2c570bcc011587309fba4db316c # v1.2 (osv-exclude)
+    uses: securissima/securite-ci-securissima/.github/workflows/security.yml@9f890c94838baedefb58775bf7eb21120b6f7756 # v1.2 (osv-exclude)
     with:
       # Les lockfiles de test/fixtures décrivent des projets vulnérables à dessein : seul le projet lui-même est audité.
       audit-dirs: .
