@@ -32,7 +32,8 @@ export async function scan(ctx, components, opts = {}) {
     sources.push({ name: 'OSV.dev', ok: false, note: e.code ?? e.message });
   }
   const unlooked = scanned.filter((c) => !osvQueryable(c.purl));
-  if (unlooked.length) sources.push({ name: 'Operating-system packages', ok: false, note: `${unlooked.length} not looked up: no public advisory database covers their release (e.g. ${unlooked[0].purl.split('?')[0]})` });
+  // A lasting gap, not a source that failed to answer: trying again changes nothing.
+  if (unlooked.length) sources.push({ name: 'Operating-system packages', ok: false, lasting: true, note: `${unlooked.length} not looked up: no public advisory database covers their release (e.g. ${unlooked[0].purl.split('?')[0]})` });
   const refs = [...affected.values()].flat();
   const details = await loadDetails(ctx, refs);
   const missingDetails = new Set(refs.map((r) => r.id).filter((id) => !details.has(id)));
@@ -117,6 +118,9 @@ export async function scan(ctx, components, opts = {}) {
     components: { total: components.length, scanned: scanned.length, devExcluded: components.length - scanned.length },
     sources,
     complete: sources.every((s) => s.ok || s.optional) && missingDetails.size === 0,
+    // Every source that can answer did: what was looked up is current, whatever lasting gap remains
+    // (a service may then clear findings that are gone, and need not try again soon).
+    answered: sources.every((s) => s.ok || s.optional || s.lasting) && missingDetails.size === 0,
     counts,
     findings,
     suppressed,

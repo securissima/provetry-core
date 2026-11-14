@@ -115,12 +115,14 @@ test('scan: --include-dev and VEX suppression', async () => {
   assert.ok(r.findings.some((f) => f.component.name === 'axios'), 'a statement about another product does not hide it');
   assert.ok(r.findings.some((f) => f.id === 'GHSA-dev-only'), 'dev dependencies are scanned on request, even without details');
   assert.equal(r.complete, false, 'a record whose details could not be loaded makes the result incomplete');
+  assert.equal(r.answered, false, "missing details: not answered either");
 });
 
 test('scan: a failing source is reported, the others still answer', async () => {
   const { components } = await collect(root);
   const r = await scan(ctxOf({ euvdStatus: 503 }), components);
   assert.deepEqual(r.sources.find((s) => s.name === 'ENISA EUVD'), { name: 'ENISA EUVD', ok: false, note: 'HTTP 503' });
+  assert.equal(r.answered, false);
   assert.equal(r.complete, false);
   assert.ok(r.findings[0].exploited.kev);
   assert.equal(r.findings[0].exploited.euvd, null);
@@ -236,6 +238,7 @@ test('scan: operating-system packages of a release OSV does not cover are not as
   assert.deepEqual(queries.map((q) => q.package.purl ?? `${q.package.ecosystem}/${q.package.name}`), ['Debian:12/zsh', 'pkg:npm/lodash@4.17.20']);
   assert.equal(r.complete, false);
   assert.match(r.sources.find((s) => s.name === 'Operating-system packages').note, /1 not looked up/);
+  assert.equal(r.answered, true, 'a lasting gap: every source that can answer did');
 });
 
 test('scan: Syft-style Alpine purls are looked up; RPM packages are said not to be', async () => {
