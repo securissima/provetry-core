@@ -13,7 +13,7 @@ import { normalizePypi } from '../purl.js';
 // The data is read at a fixed commit, moved deliberately with each release of this tool: whoever can push
 // to the data repository cannot change what a release concludes. Null: not published yet, nothing is read.
 export const DATA_REF = null;
-export const DATA_URL = DATA_REF ? `https://raw.githubusercontent.com/Enigmacker/provetry-vulnerable-functions/${DATA_REF}/data` : null;
+export const DATA_URL = DATA_REF ? `https://raw.githubusercontent.com/securissima/provetry-vulnerable-functions/${DATA_REF}/data` : null;
 const METHOD = /^provetry-vulnerable-functions\/[23] \(/;
 const MAX_AGE = 24 * 3600;
 const ID = /^GHSA(?:-[23456789cfghjmpqrvwx]{4}){3}$/;

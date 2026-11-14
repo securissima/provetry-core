@@ -1,7 +1,7 @@
 # Provetry for GitLab CI: SBOM, vulnerability watch and reachability (Go functions, package imports elsewhere) at every tag.
 # Include it in your .gitlab-ci.yml:
 #   include:
-#     - remote: https://raw.githubusercontent.com/Enigmacker/provetry-core/main/ci/provetry.gitlab-ci.yml
+#     - remote: https://raw.githubusercontent.com/securissima/provetry-core/main/ci/provetry.gitlab-ci.yml
 # Variables (Settings → CI/CD → Variables): PROVETRY_API_KEY (masked, protected) and PROVETRY_PRODUCT_ID
 # to upload to Provetry; PROVETRY_FAIL_ON (exploited, critical, high…) to fail the pipeline.
 provetry:
@@ -16,7 +16,7 @@ provetry:
     PROVETRY_APP_URL: https://app.provetry.com
   script:
     - set -euo pipefail
-    - git init -q /tmp/provetry && git -C /tmp/provetry fetch -q --depth 1 https://github.com/Enigmacker/provetry-core.git "$PROVETRY_REF" && git -C /tmp/provetry checkout -q FETCH_HEAD
+    - git init -q /tmp/provetry && git -C /tmp/provetry fetch -q --depth 1 https://github.com/securissima/provetry-core.git "$PROVETRY_REF" && git -C /tmp/provetry checkout -q FETCH_HEAD
     - VERSION="${CI_COMMIT_TAG#v}"
     - node /tmp/provetry/src/cli.js sbom . --name "$CI_PROJECT_NAME" --version "$VERSION" --out sbom.cdx.json
     - |

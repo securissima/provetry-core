@@ -112,7 +112,7 @@ export function toSarif(r, { location = 'sbom.json' } = {}) {
   return {
     $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
     version: '2.1.0',
-    runs: [{ tool: { driver: { name: 'Provetry', version: TOOL.version, informationUri: 'https://github.com/Enigmacker/provetry-core', rules: [...rules.values()] } }, results }],
+    runs: [{ tool: { driver: { name: 'Provetry', version: TOOL.version, informationUri: 'https://github.com/securissima/provetry-core', rules: [...rules.values()] } }, results }],
   };
 }
 

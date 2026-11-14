@@ -86,7 +86,7 @@ clock options
 
 Exit codes: 0 done, 1 --fail-on threshold reached, 2 error or incomplete data
 (with --fail-on, a scan that could not check every source exits 2 rather than pass).
-Docs: https://github.com/Enigmacker/provetry-core
+Docs: https://github.com/securissima/provetry-core
 `;
 
 // Text from files and advisories goes to the terminal: no control characters.

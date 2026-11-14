@@ -1,6 +1,6 @@
 # Provetry
 
-[![CI](https://github.com/Enigmacker/provetry-core/actions/workflows/ci.yml/badge.svg)](https://github.com/Enigmacker/provetry-core/actions/workflows/ci.yml)
+[![CI](https://github.com/securissima/provetry-core/actions/workflows/ci.yml/badge.svg)](https://github.com/securissima/provetry-core/actions/workflows/ci.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 
 **A software bill of materials and a vulnerability watch for the EU Cyber Resilience Act, from the lock files you already have.**
@@ -41,8 +41,8 @@ Free, open source, no account, no telemetry, no dependency. Node.js 22 or later.
 ## Quick start
 
 ```sh
-npx github:Enigmacker/provetry-core sbom . --name my-product --version 2.4.0 --out sbom.cdx.json
-npx github:Enigmacker/provetry-core scan .
+npx github:securissima/provetry-core sbom . --name my-product --version 2.4.0 --out sbom.cdx.json
+npx github:securissima/provetry-core scan .
 ```
 
 Or clone and run `node src/cli.js` directly: there is nothing to install.
@@ -240,7 +240,7 @@ jobs:
           go-version: stable
       - id: provetry
         # Pinned to a commit (version 0.9.0): this code receives your API key.
-        uses: Enigmacker/provetry-core@38777e1406ad822e9c80d96674f8a7216e20778d
+        uses: securissima/provetry-core@38777e1406ad822e9c80d96674f8a7216e20778d
         with:
           fail-on: exploited
           # Optional: upload each release to Provetry (API key from Settings, product id from its page).
@@ -259,7 +259,7 @@ The version is the tag (`v2.4.0` becomes `2.4.0`). Uploads happen on tags only (
 
 ```yaml
 include:
-  - remote: https://raw.githubusercontent.com/Enigmacker/provetry-core/main/ci/provetry.gitlab-ci.yml
+  - remote: https://raw.githubusercontent.com/securissima/provetry-core/main/ci/provetry.gitlab-ci.yml
 ```
 
 Runs on every tag. Set `PROVETRY_API_KEY` and `PROVETRY_PRODUCT_ID` as CI/CD variables to upload, `PROVETRY_FAIL_ON` to fail the pipeline.
@@ -267,8 +267,8 @@ Runs on every tag. Set `PROVETRY_API_KEY` and `PROVETRY_PRODUCT_ID` as CI/CD var
 ### Any CI
 
 ```sh
-npx -y github:Enigmacker/provetry-core sbom . --name gateway --version "$VERSION" --out sbom.cdx.json
-npx -y github:Enigmacker/provetry-core scan sbom.cdx.json --format sarif --out provetry.sarif --fail-on exploited
+npx -y github:securissima/provetry-core sbom . --name gateway --version "$VERSION" --out sbom.cdx.json
+npx -y github:securissima/provetry-core scan sbom.cdx.json --format sarif --out provetry.sarif --fail-on exploited
 ```
 
 `--fail-on exploited` fails the build (exit 1) for vulnerabilities exploited in the wild; `critical`, `high`, `medium`, `low` and `any` are stricter. A finding exploited in the wild always reaches the threshold, whatever its score. If a source could not be checked and nothing reached the threshold, the exit code is 2, not 0. SARIF paths are relative to the directory you run the command from, so run it from the repository root.
