@@ -260,7 +260,8 @@ The version is the tag (`v2.4.0` becomes `2.4.0`). Uploads happen on tags only (
 
 ```yaml
 include:
-  - remote: https://raw.githubusercontent.com/securissima/provetry-core/main/ci/provetry.gitlab-ci.yml
+  # Pinned to a commit (version 0.10.1), like the action: a branch can change, a commit cannot.
+  - remote: https://raw.githubusercontent.com/securissima/provetry-core/11fc205d8fa2f7df6e7e3816b05340d2521ea6f4/ci/provetry.gitlab-ci.yml
 ```
 
 Runs on every tag. Set `PROVETRY_API_KEY` and `PROVETRY_PRODUCT_ID` as CI/CD variables to upload, `PROVETRY_FAIL_ON` to fail the pipeline.
