@@ -1,7 +1,8 @@
 # Provetry for GitLab CI: SBOM, vulnerability watch and reachability (Go functions, package imports elsewhere) at every tag.
-# Include it in your .gitlab-ci.yml:
+# Include it in your .gitlab-ci.yml from a commit, not from main (a branch can change, a commit cannot):
 #   include:
-#     - remote: https://raw.githubusercontent.com/securissima/provetry-core/main/ci/provetry.gitlab-ci.yml
+#     - remote: https://raw.githubusercontent.com/securissima/provetry-core/<commit>/ci/provetry.gitlab-ci.yml
+# The README gives the commit of the current version.
 # Variables (Settings → CI/CD → Variables): PROVETRY_API_KEY (masked, protected) and PROVETRY_PRODUCT_ID
 # to upload to Provetry; PROVETRY_FAIL_ON (exploited, critical, high…) to fail the pipeline.
 provetry:
