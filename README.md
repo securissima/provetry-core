@@ -240,8 +240,8 @@ jobs:
         with:
           go-version: stable
       - id: provetry
-        # Pinned to a commit (version 0.10.0): this code receives your API key.
-        uses: securissima/provetry-core@06b2905a1bcf7dfa7e10e675dd37f766de7bf896
+        # Pinned to a commit (version 0.10.1): this code receives your API key.
+        uses: securissima/provetry-core@f7c4204201c14c9beb507a09beef3e072e33d70c
         with:
           fail-on: exploited
           # Optional: upload each release to Provetry (API key from Settings, product id from its page).
