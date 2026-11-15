@@ -15,10 +15,10 @@ jobs:
       matrix:
         node: ["22", "24"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
       - run: npm ci --ignore-scripts
@@ -34,7 +34,7 @@ jobs:
     # The GitHub Action itself, on the test fixtures (real OSV, KEV and EUVD lookups, nothing uploaded).
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - id: provetry
@@ -44,3 +44,18 @@ jobs:
           version: 0.0.0-ci
           reachability: "off"
       - run: test -s "${{ steps.provetry.outputs.sbom }}" && test -s "${{ steps.provetry.outputs.sarif }}"
+
+  action-syft:
+    # The action on a container image with Syft (image-tool: syft), so the pinned Syft download is exercised.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: provetry
+        uses: ./
+        with:
+          image: alpine:3.20
+          image-tool: syft
+          version: 0.0.0-ci
+      - run: test -s "${{ steps.provetry.outputs.sbom }}" && grep -q '"pkg:apk/alpine/' "${{ steps.provetry.outputs.sbom }}"

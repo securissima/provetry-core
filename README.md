@@ -234,8 +234,9 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v5        # only for Go projects: enables reachability
+      # Every action pinned to a commit: a tag can be moved, a commit cannot.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0, only for Go projects: enables reachability
         with:
           go-version: stable
       - id: provetry
@@ -247,7 +248,7 @@ jobs:
           api-key: ${{ secrets.PROVETRY_API_KEY }}
           product-id: 00000000-0000-0000-0000-000000000000
           # image: ghcr.io/acme/gateway:${{ github.ref_name }}   # describe a container image (or rootfs.tar.gz) instead
-      - uses: github/codeql-action/upload-sarif@v4
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         if: always()
         with:
           sarif_file: ${{ steps.provetry.outputs.sarif }}

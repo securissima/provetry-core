@@ -1,6 +1,6 @@
 {
   "name": "provetry",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "SBOM and exploited-vulnerability watch for the EU Cyber Resilience Act: CycloneDX and SPDX from your lock files, OSV, CISA KEV and EUVD, VEX, and the Article 14 reporting clock.",
   "type": "module",
   "license": "AGPL-3.0-only",
