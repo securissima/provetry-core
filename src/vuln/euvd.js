@@ -7,8 +7,15 @@ import { cacheGet, cacheSet, getJson, CVE_RE } from '../util.js';
 
 export const EUVD_API = 'https://euvdservices.enisa.europa.eu/api';
 const MAX_AGE = 24 * 3600;
-const PAGE = 100;
+const PAGE = 100; // the largest page the search accepts
 const MAX_PAGES = 60;
+
+/**
+ * The full list comes from the search, filtered on exploited entries: `{ items, total }`, paginated from page 0.
+ * (`/exploitedvulnerabilities` only gives the latest few entries and ignores `size`; `/vulnerabilities` does not
+ * exist and answers 404.)
+ */
+export const euvdExploitedPage = (page) => `${EUVD_API}/search?exploited=true&size=${PAGE}&page=${page}`;
 
 /** Map<id, { euvd, exploitedSince }> keyed by every alias (CVE, GHSA…) of each exploited entry. */
 export async function loadEuvdExploited(ctx) {
@@ -17,7 +24,7 @@ export async function loadEuvdExploited(ctx) {
   const obj = {};
   let total = Infinity;
   for (let page = 0; page < MAX_PAGES && page * PAGE < total; page++) {
-    const { status, json } = await getJson(ctx, `${EUVD_API}/vulnerabilities?exploited=true&size=${PAGE}&page=${page}`);
+    const { status, json } = await getJson(ctx, euvdExploitedPage(page));
     if (status !== 200 || !Array.isArray(json?.items)) throw new Error(`HTTP ${status}`);
     total = Number(json.total ?? 0);
     for (const it of json.items) {
