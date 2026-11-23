@@ -59,8 +59,9 @@ function readSpdx(doc) {
   return { format: 'SPDX', specVersion: doc.spdxVersion, name: doc.name ?? '', version: '', components: out, notices };
 }
 
-// SPDX 3.x, JSON-LD: a graph of elements. Packages carry their package URL in software_packageUrl (or as an
-// external identifier); development dependencies are the targets of a relationship scoped "development".
+// SPDX 3.x, JSON-LD: a graph of elements. Packages (and the AI models and datasets of the AI and Dataset
+// profiles, which are packages too) carry their package URL in software_packageUrl, or as an external
+// identifier; development dependencies are the targets of a relationship scoped "development".
 const isSpdx3 = (json) => [json?.['@context']].flat().some((c) => typeof c === 'string' && /^https:\/\/spdx\.org\/rdf\/3\./.test(c)) && Array.isArray(json['@graph']);
 const SPDX3_TO_CDX = { sha1: 'SHA-1', sha256: 'SHA-256', sha384: 'SHA-384', sha512: 'SHA-512', md5: 'MD5', sha3_256: 'SHA3-256', sha3_384: 'SHA3-384', sha3_512: 'SHA3-512', blake2b256: 'BLAKE2b-256', blake2b384: 'BLAKE2b-384', blake2b512: 'BLAKE2b-512', blake3: 'BLAKE3' };
 
@@ -76,7 +77,7 @@ function readSpdx3(doc) {
   }
   const out = [];
   for (const e of graph) {
-    if (!/^(software_)?Package$/.test(kind(e))) continue;
+    if (!/^((software_)?Package|(ai_)?AIPackage|(dataset_)?DatasetPackage)$/.test(kind(e))) continue;
     const purl = e.software_packageUrl ?? list(e.externalIdentifier).find((x) => short(x?.externalIdentifierType) === 'packageUrl')?.identifier;
     if (typeof purl !== 'string') continue;
     const hashes = list(e.verifiedUsing).filter((h) => SPDX3_TO_CDX[short(h?.algorithm)] && typeof h.hashValue === 'string').map((h) => ({ alg: SPDX3_TO_CDX[short(h.algorithm)], content: h.hashValue }));

@@ -4,7 +4,7 @@
 //  - a root filesystem archive (rootfs.tar, rootfs.tar.gz, rootfs.tar.zst), as Yocto, Buildroot or debootstrap produce.
 // Layers are applied in order, with their whiteouts, and only the package databases, os-release and the
 // lock files and installed packages of language package managers are kept: never the rest of the image.
-// What cannot be read (a file too large, an RPM database, a release no advisory database covers) is said,
+// What cannot be read (a file too large, an RPM database in an older format, a release no advisory database covers) is said,
 // and marked as making the result incomplete: never a silently shorter list.
 import { basename, join } from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -14,6 +14,8 @@ import { Transform } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { sniff, indexTar, openStream, readTar, normPath } from './tar.js';
 import { parseOsRelease, distroOf, parseDpkgStatus, parseApkInstalled, parseOpkgStatus, parsePythonMetadata, parseNodePackage } from './packages.js';
+import { parseRpmSqlite } from './rpmdb.js';
+import { osvQueryable } from '../purl.js';
 import { PARSERS, mergeComponents } from '../lockfiles/index.js';
 
 const MB = 1024 * 1024;
@@ -24,7 +26,10 @@ const TOTAL_BYTES = 512 * MB;    // all the files kept, across layers
 const TOTAL_FILES = 200_000;     // all the paths kept, across layers
 const UNPACKED_CAP = 16 * 1024 * MB;  // an archive compressed whole, once decompressed to disk
 const LOCK_NAMES = new Set(Object.keys(PARSERS).filter((k) => PARSERS[k]));
-const RPM_DB = /^(var\/lib\/rpm\/(Packages|rpmdb\.sqlite)|usr\/lib\/sysimage\/rpm\/rpmdb\.sqlite)$/;
+// The RPM database: read in its SQLite form; the older Berkeley DB file and SUSE's ndb file are named, not read.
+const RPM_SQLITE = /^(var\/lib|usr\/lib\/sysimage)\/rpm\/rpmdb\.sqlite$/;
+const RPM_WAL = /^(var\/lib|usr\/lib\/sysimage)\/rpm\/rpmdb\.sqlite-wal$/;
+const RPM_OTHER = /^(var\/lib|usr\/lib\/sysimage)\/rpm\/Packages(\.db)?$/;
 // Lock files that describe no installed software: caches, documentation, test fixtures, examples.
 const NOT_INSTALLED = /(^|\/)(node_modules|vendor|\.cache|\.npm|\.yarn|\.pnpm-store|\.cargo|\.git|go\/pkg\/mod|tests?|testdata|fixtures|__tests__|__fixtures__|examples?|samples?)\//;
 const SYSTEM_DIRS = /^(proc|sys|dev|tmp|var\/tmp|var\/cache|usr\/share)\//;
@@ -39,7 +44,9 @@ function wanted(path) {
   if (path === 'var/lib/dpkg/status' || /^var\/lib\/dpkg\/status\.d\/[^/]+$/.test(path) && !/\.md5sums$/.test(path)) return { kind: 'dpkg', cap: DB_CAP };
   if (path === 'lib/apk/db/installed') return { kind: 'apk', cap: DB_CAP };
   if (path === 'var/lib/opkg/status' || path === 'usr/lib/opkg/status') return { kind: 'opkg', cap: DB_CAP };
-  if (RPM_DB.test(path)) return { kind: 'rpm', cap: 0 };
+  if (RPM_SQLITE.test(path)) return { kind: 'rpmdb', cap: DB_CAP };
+  if (RPM_OTHER.test(path)) return { kind: 'rpm', cap: 0 };
+  if (RPM_WAL.test(path)) return { kind: 'rpmwal', cap: 0 };
   if (SYSTEM_DIRS.test(path)) return null;
   // dist-info/METADATA, egg-info/PKG-INFO, or an egg-info that is a single file (older setuptools).
   if (/(^|\/)(site|dist)-packages\/[^/]+\.(dist-info\/METADATA|egg-info\/PKG-INFO|egg-info)$/.test(path)) return { kind: 'python', cap: SMALL_CAP };
@@ -120,6 +127,8 @@ class Layers {
       const w = wanted(e.path);
       if (!w) { if (this.has(e.path)) replaced.add(e.path); return 0; }
       if (w.kind === 'rpm') { adds.set(e.path, { rpm: true }); return 0; }
+      // A write-ahead log that is not empty holds changes the database file does not have yet.
+      if (w.kind === 'rpmwal') { if (e.type === 'file' && e.size > 0) adds.set(e.path, { rpm: true }); else replaced.add(e.path); return 0; }
       if (e.type === 'symlink') {
         // A symbolic link is relative to its directory, and follows its target whatever replaces it later.
         adds.set(e.path, { link: e.linkname.startsWith('/') ? normPath(e.linkname) : normPath(`${dir}/${e.linkname}`) });
@@ -169,9 +178,14 @@ async function parseAll(layers) {
     if (w.kind === 'python' && hasDpkg && DEBIAN_PYTHON.test(path)) continue;
     const data = layers.read(path);
     if (!data) continue;
-    const text = data.toString('utf8');
+    const text = w.kind === 'rpmdb' ? '' : data.toString('utf8');
     try {
-      if (w.kind === 'dpkg') lists.push(parseDpkgStatus(text, path, dist));
+      if (w.kind === 'rpmdb') {
+        const { components: rpms, skipped } = parseRpmSqlite(data, path, os);
+        lists.push(rpms);
+        if (skipped) notices.push({ file: path, incomplete: true, text: `${path}: ${skipped} ${skipped > 1 ? 'entries' : 'entry'} of the RPM database could not be read; the packages they describe are not in the SBOM.` });
+      }
+      else if (w.kind === 'dpkg') lists.push(parseDpkgStatus(text, path, dist));
       else if (w.kind === 'apk') lists.push(parseApkInstalled(text, path, dist));
       else if (w.kind === 'opkg') lists.push(parseOpkgStatus(text, path, dist));
       else if (w.kind === 'python') lists.push(parsePythonMetadata(text, path));
@@ -185,7 +199,13 @@ async function parseAll(layers) {
     }
   }
   for (const [path, size] of [...layers.tooLarge].sort()) errors.push({ file: path, error: `${path}: too large to read (${Math.round(size / MB)} MB)` });
-  if (layers.rpm.size) notices.push({ file: [...layers.rpm][0], incomplete: true, text: `${[...layers.rpm][0]}: RPM package databases are not read yet; the packages it lists are not in the SBOM.` });
+  for (const path of [...layers.rpm].sort()) {
+    notices.push(RPM_WAL.test(path)
+      ? { file: path, incomplete: true, text: `${path}: the RPM database has changes not yet written to its main file; the packages they add or remove are not reflected in the SBOM.` }
+      : { file: path, incomplete: true, text: `${path}: RPM package databases in this format (Berkeley DB, ndb) are not read yet; the packages it lists are not in the SBOM.` });
+  }
+  const rpms = lists.flat().filter((c) => c.type === 'rpm');
+  if (rpms.length && !rpms.some((c) => osvQueryable(c.purl))) notices.push({ file: 'os-release', incomplete: true, text: `${os?.prettyName || os?.id || 'This distribution'}: no public advisory database Provetry reads covers its RPM packages; they are listed but not looked up.` });
   const osPackages = lists.some((l) => l.some((c) => c.type === 'deb' || c.type === 'apk'));
   if (lists.some((l) => l.some((c) => c.type === 'opkg'))) notices.push({ file: 'opkg', incomplete: true, text: 'opkg packages are listed in the SBOM, but no public advisory database covers them: they are not looked up.' });
   if (osPackages && !os) notices.push({ file: 'os-release', incomplete: true, text: 'No os-release file: the operating system and its release are unknown, so its packages cannot be looked up.' });

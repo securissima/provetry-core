@@ -6,6 +6,7 @@ import { memoryCache } from '../src/cache.js';
 import { readVex, vexTemplate, purlCovers } from '../src/vex.js';
 import { toText, toMarkdown, toSarif } from '../src/report.js';
 import { severityOf, groupRecords, fixedVersions } from '../src/vuln/osv.js';
+import { osvOsPackage, osvQueryable } from '../src/purl.js';
 
 const root = new URL('./fixtures/proj', import.meta.url).pathname;
 
@@ -241,18 +242,146 @@ test('scan: operating-system packages of a release OSV does not cover are not as
   assert.equal(r.answered, true, 'a lasting gap: every source that can answer did');
 });
 
-test('scan: Syft-style Alpine purls are looked up; RPM packages are said not to be', async () => {
+test('scan: Syft-style Alpine purls are looked up; RPM packages of a distribution OSV does not carry are said not to be', async () => {
   const queries = [];
   const fetch = fakeFetch();
   const ctx = { fetchJson: async (url, opts) => { if (url.endsWith('/querybatch')) queries.push(...opts.body.queries); return fetch(url, opts); }, cache: memoryCache(), now: () => new Date('2026-11-07T10:00:00Z') };
   const components = [
     { type: 'apk', name: 'musl', version: '1.2.4-r2', purl: 'pkg:apk/alpine/musl@1.2.4-r2?arch=x86_64&distro=alpine-3.19.1&upstream=musl', scope: 'required', sources: ['s'] },
-    { type: 'rpm', name: 'bash', version: '5.1.8-6.el9', purl: 'pkg:rpm/redhat/bash@5.1.8-6.el9?arch=x86_64&distro=rhel-9.3', scope: 'required', sources: ['s'] },
+    { type: 'rpm', name: 'bash', version: '5.2.26-3.fc40', purl: 'pkg:rpm/fedora/bash@5.2.26-3.fc40?arch=x86_64&distro=fedora-40', scope: 'required', sources: ['s'] },
+    { type: 'rpm', name: 'bash', version: '5.2.26-6.el10', purl: 'pkg:rpm/redhat/bash@5.2.26-6.el10?arch=x86_64&distro=rhel-10.1', scope: 'required', sources: ['s'] },
   ];
   const r = await scan(ctx, components, { euvd: false, epss: false });
   assert.deepEqual(queries, [{ package: { name: 'musl', ecosystem: 'Alpine:v3.19' }, version: '1.2.4-r2' }]);
   assert.equal(r.complete, false);
-  assert.match(r.sources.find((s) => s.name === 'Operating-system packages').note, /pkg:rpm\/redhat\/bash/);
+  assert.match(r.sources.find((s) => s.name === 'Operating-system packages').note, /2 not looked up.*pkg:rpm\/fedora\/bash/);
+});
+
+test('purl: RPM packages as OSV names them (epoch, source name, one ecosystem per Red Hat repository)', () => {
+  const alma = osvOsPackage('pkg:rpm/almalinux/openssl-libs@3.0.7-24.el9?arch=x86_64&distro=almalinux-9.3&epoch=1&upstream=openssl-3.0.7-24.el9.src.rpm');
+  assert.deepEqual(alma.ecosystems, ['AlmaLinux:9']);
+  assert.deepEqual(alma.names, ['openssl-libs', 'openssl']);
+  assert.equal(alma.version, '1:3.0.7-24.el9', 'the epoch is part of the version advisories compare');
+  assert.equal(alma.family, 'almalinux');
+  const rhel = osvOsPackage('pkg:rpm/redhat/glibc@2.34-60.el9?arch=x86_64&distro=rhel-9.3&upstream=glibc-2.34-60.el9.src.rpm');
+  assert.deepEqual(rhel.ecosystems, ['baseos', 'appstream', 'crb', 'highavailability', 'resilientstorage', 'nfv', 'realtime'].map((r) => `Red Hat:enterprise_linux:9::${r}`));
+  assert.deepEqual(rhel.names, ['glibc']);
+  assert.equal(rhel.version, '2.34-60.el9');
+  assert.equal(rhel.family, 'redhat', 'redhat is the purl namespace of rhel: not a derivative');
+  assert.deepEqual(osvOsPackage('pkg:rpm/rocky/openssl-libs@3.0.7-24.el9?distro=rocky-9.3&epoch=1&upstream=openssl-3.0.7-24.el9.src.rpm').ecosystems, ['Rocky Linux:9']);
+  assert.deepEqual(osvOsPackage('pkg:rpm/opensuse-leap/libopenssl3@3.1.4-150600.5.7.1?distro=opensuse-leap-15.6&upstream=openssl-3-3.1.4-150600.5.7.1.src.rpm').names, ['libopenssl3', 'openssl-3']);
+  assert.deepEqual(osvOsPackage('pkg:rpm/opensuse-leap/libopenssl3@3.1.4-150600.5.7.1?distro=opensuse-leap-15.6&upstream=openssl-3-3.1.4-150600.5.7.1.src.rpm').ecosystems, ['openSUSE:Leap 15.6']);
+  assert.deepEqual(osvOsPackage('pkg:rpm/mageia/curl@8.4.0-1.mga9?distro=mageia-9&upstream=curl-8.4.0-1.mga9.src.rpm').ecosystems, ['Mageia:9']);
+  // A subpackage with a version of its own: its source package is not asked about under that version
+  // (1.30 would stay below a fix numbered 4:5.32.1 for ever). Red Hat and AlmaLinux name the binary package.
+  assert.deepEqual(osvOsPackage('pkg:rpm/almalinux/perl-Errno@1.30-481.el9?distro=almalinux-9.3&upstream=perl-5.32.1-481.el9.src.rpm').names, ['perl-Errno']);
+  // Trivy's spellings.
+  assert.deepEqual(osvOsPackage('pkg:rpm/alma/openssl-libs@3.0.7-24.el9?distro=alma-9.3&epoch=1').ecosystems, ['AlmaLinux:9']);
+  assert.deepEqual(osvOsPackage('pkg:rpm/redhat/bash@4.4.20-4.el8_6?distro=redhat-8.8').ecosystems[0], 'Red Hat:enterprise_linux:8::baseos');
+  // Not guessed: no release, a release OSV files otherwise, a distribution it does not carry, a contradiction.
+  for (const purl of ['pkg:rpm/redhat/bash@5.1.8-6.el9', 'pkg:rpm/redhat/bash@5.2.26-6.el10?distro=rhel-10.1', 'pkg:rpm/redhat/bash@4.2.46-35.el7?distro=rhel-7.9', 'pkg:rpm/fedora/bash@5.2.26-3.fc40?distro=fedora-40',
+    'pkg:rpm/centos/bash@5.1.8-6.el9?distro=centos-9', 'pkg:rpm/amzn/bash@5.2.15-1.amzn2023?distro=amzn-2023', 'pkg:rpm/sles/bash@4.4-150400.25.22?distro=sles-15.5', 'pkg:rpm/rocky/bash@5.1.8-6.el9?distro=almalinux-9.3',
+    'pkg:rpm/opensuse-leap/bash@4.4?distro=opensuse-leap-15',
+    // Advisories that name the source package only: not asked without it, or for a subpackage versioned apart.
+    'pkg:rpm/rocky/openssl-libs@3.0.7-24.el9?distro=rocky-9.3&epoch=1', 'pkg:rpm/mageia/curl@8.4.0-1.mga9?distro=mageia-9', 'pkg:rpm/opensuse-leap/libopenssl3@3.1.4-150600.5.7.1?distro=opensuse-leap-15.6',
+    'pkg:rpm/rocky/perl-Errno@1.30-481.el9?distro=rocky-9.3&upstream=perl-5.32.1-481.el9.src.rpm',
+    // A module stream: its advisories cover every stream of the module.
+    'pkg:rpm/redhat/nodejs@18.12.1-1.module%2Bel8.7.0%2B17306%2Bfc023f99?distro=rhel-8.7&epoch=1', 'pkg:rpm/almalinux/nodejs@18.12.1-1.module_el8.7.0%2B3370%2B40ccb2e2?distro=almalinux-8.7&epoch=1',
+    // Releases OSV does not carry: they would come back empty and look clean.
+    'pkg:rpm/almalinux/bash@1.0-1.el7?distro=almalinux-7.9', 'pkg:rpm/opensuse-leap/bash@4.4-1?distro=opensuse-leap-42.3&upstream=bash-4.4-1.src.rpm']) {
+    assert.equal(osvOsPackage(purl), null, purl);
+    assert.equal(osvQueryable(purl), false, purl);
+  }
+  // A derivative named by another namespace is looked up as the release it names, and reported as approximate.
+  assert.equal(osvOsPackage('pkg:rpm/oraclelinux/bash@5.1.8-6.el9?distro=rhel-9.3').family, 'redhat');
+});
+
+test('scan: an RPM package is asked under each name and repository; its advisory carries the CVEs it fixes', async () => {
+  const purl = 'pkg:rpm/almalinux/openssl-libs@3.0.7-24.el9?arch=x86_64&distro=almalinux-9.3&epoch=1&upstream=openssl-3.0.7-24.el9.src.rpm';
+  const rhel = 'pkg:rpm/redhat/openssl-libs@3.0.7-24.el9?arch=x86_64&distro=rhel-9.3&epoch=1&upstream=openssl-3.0.7-24.el9.src.rpm';
+  const queries = [];
+  const records = {
+    // No severity of its own, two CVEs fixed, one of them exploited: found under the binary name only.
+    'ALSA-2024:0310': { id: 'ALSA-2024:0310', summary: 'openssl security update', related: ['CVE-2023-5363', 'CVE-2023-44487'], upstream: ['CVE-2023-5363', 'CVE-2023-44487'],
+      affected: [{ package: { ecosystem: 'AlmaLinux:9', name: 'openssl-libs' }, ranges: [{ type: 'ECOSYSTEM', events: [{ introduced: '0' }, { fixed: '1:3.0.7-25.el9_3' }] }] },
+        { package: { ecosystem: 'AlmaLinux:8', name: 'openssl-libs' }, ranges: [{ type: 'ECOSYSTEM', events: [{ introduced: '0' }, { fixed: '1:1.1.1k-12.el8_9' }] }] }] },
+    'CVE-2023-5363': { id: 'CVE-2023-5363', severity: [{ type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N' }] },
+    'CVE-2023-44487': { id: 'CVE-2023-44487' },
+    // The same advisory answers under two repositories: one finding.
+    'RHSA-2024:0310': { id: 'RHSA-2024:0310', summary: 'openssl security update', upstream: ['CVE-2023-5363'], severity: [{ type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N' }],
+      affected: [{ package: { ecosystem: 'Red Hat:enterprise_linux:9::baseos', name: 'openssl-libs' }, ranges: [{ type: 'ECOSYSTEM', events: [{ introduced: '0' }, { fixed: '1:3.0.7-25.el9_3' }] }] }] },
+  };
+  const base = fakeFetch();
+  const asked = [];
+  const fetchJson = async (url, opts = {}) => {
+    if (url.endsWith('/querybatch')) {
+      queries.push(...opts.body.queries);
+      return { status: 200, json: { results: opts.body.queries.map((q) => {
+        if (q.package.ecosystem === 'AlmaLinux:9' && q.package.name === 'openssl-libs') return { vulns: [{ id: 'ALSA-2024:0310', modified: 'm' }] };
+        if (/^Red Hat:enterprise_linux:9::(baseos|appstream)$/.test(q.package.ecosystem) && q.package.name === 'openssl-libs') return { vulns: [{ id: 'RHSA-2024:0310', modified: 'm' }] };
+        return {};
+      }) } };
+    }
+    const m = /\/vulns\/(.+)$/.exec(url);
+    if (m) { const id = decodeURIComponent(m[1]); asked.push(id); return records[id] ? { status: 200, json: records[id] } : { status: 404, json: null }; }
+    return base(url, opts);
+  };
+  const r = await scan({ fetchJson, cache: memoryCache(), now: () => new Date('2026-11-07T10:00:00Z') }, [
+    { type: 'rpm', name: 'openssl-libs', version: '3.0.7-24.el9', purl, scope: 'required', sources: ['s'] },
+    { type: 'rpm', name: 'openssl-libs', version: '3.0.7-24.el9', purl: rhel, scope: 'required', sources: ['s'] },
+  ], { euvd: false, epss: false });
+  assert.deepEqual(queries.slice(0, 2), [{ package: { name: 'openssl-libs', ecosystem: 'AlmaLinux:9' }, version: '1:3.0.7-24.el9' }, { package: { name: 'openssl', ecosystem: 'AlmaLinux:9' }, version: '1:3.0.7-24.el9' }]);
+  assert.equal(queries.length, 2 + 14, 'two names, and for Red Hat seven repositories each');
+  assert.equal(r.complete, true);
+  assert.equal(r.sources.some((s) => s.name === 'Operating-system packages'), false);
+  assert.equal(r.findings.length, 2);
+  const alma = r.findings.find((f) => f.component.purl === purl);
+  assert.equal(alma.id, 'CVE-2023-44487', 'led by the CVE it is known to be exploited under');
+  assert.deepEqual(alma.ids, ['CVE-2023-44487', 'ALSA-2024:0310', 'CVE-2023-5363']);
+  assert.ok(alma.exploited?.kev);
+  assert.deepEqual(alma.records, ['ALSA-2024:0310'], 'the stored key stays the advisory');
+  assert.deepEqual(alma.fixed, ['1:3.0.7-25.el9_3'], 'the fix of its own release only');
+  assert.equal(alma.severity, 'high', 'from the CVE record, as the advisory carries none');
+  assert.ok(asked.includes('CVE-2023-5363') && asked.includes('CVE-2023-44487'));
+  const rh = r.findings.find((f) => f.component.purl === rhel);
+  assert.equal(rh.id, 'RHSA-2024:0310');
+  assert.deepEqual(rh.ids, ['RHSA-2024:0310', 'CVE-2023-5363']);
+  assert.equal(rh.exploited, null);
+  assert.deepEqual(rh.fixed, ['1:3.0.7-25.el9_3']);
+});
+
+test('scan: a distribution record of one CVE is that CVE (exploited lists, VEX); the advisory that repeats it is not reported twice', async () => {
+  const purl = 'pkg:deb/debian/nghttp2@1.52.0-1?arch=amd64&distro=debian-12';
+  const records = {
+    'DEBIAN-CVE-2023-44487': { id: 'DEBIAN-CVE-2023-44487', upstream: ['CVE-2023-44487'], summary: 'HTTP/2 rapid reset', severity: [{ type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H' }],
+      affected: [{ package: { ecosystem: 'Debian:12', name: 'nghttp2' }, ranges: [{ type: 'ECOSYSTEM', events: [{ introduced: '0' }, { fixed: '1.52.0-1+deb12u1' }] }] }] },
+    'DSA-5521-1': { id: 'DSA-5521-1', upstream: ['CVE-2023-44487'], summary: 'nghttp2 - security update',
+      affected: [{ package: { ecosystem: 'Debian:12', name: 'nghttp2' }, ranges: [{ type: 'ECOSYSTEM', events: [{ introduced: '0' }, { fixed: '1.52.0-1+deb12u1' }] }] }] },
+    // An advisory with a CVE no record of its own covers stays.
+    'DSA-9999-1': { id: 'DSA-9999-1', upstream: ['CVE-2023-44487', 'CVE-2024-11111'], summary: 'nghttp2 - another update', affected: [] },
+  };
+  const base = fakeFetch();
+  const fetchJson = async (url, opts = {}) => {
+    if (url.endsWith('/querybatch')) return { status: 200, json: { results: opts.body.queries.map(() => ({ vulns: Object.keys(records).map((id) => ({ id, modified: 'm' })) })) } };
+    const m = /\/vulns\/(.+)$/.exec(url);
+    if (m) { const d = records[decodeURIComponent(m[1])]; return d ? { status: 200, json: d } : { status: 404, json: null }; }
+    return base(url, opts);
+  };
+  const ctx = () => ({ fetchJson, cache: memoryCache(), now: () => new Date('2026-11-07T10:00:00Z') });
+  const comp = [{ type: 'deb', name: 'nghttp2', version: '1.52.0-1', purl, scope: 'required', sources: ['s'] }];
+  const r = await scan(ctx(), comp, { euvd: false });
+  assert.deepEqual(r.findings.map((f) => f.records), [['DEBIAN-CVE-2023-44487'], ['DSA-9999-1']]);
+  const f = r.findings[0];
+  assert.equal(f.id, 'CVE-2023-44487');
+  assert.deepEqual(f.ids, ['CVE-2023-44487', 'DEBIAN-CVE-2023-44487']);
+  assert.ok(f.exploited?.kev, 'the CVE named in upstream is matched against the exploited lists');
+  assert.equal(f.epss?.score, 0.94);
+  assert.equal(r.findings[1].exploited, null, 'the exploited CVE is reported under its own record, once');
+  assert.deepEqual(r.findings[1].ids, ['DSA-9999-1', 'CVE-2024-11111'], 'an advisory keeps the CVEs no record of their own covers');
+  // A VEX statement about the CVE covers the distribution's record of it.
+  const v = await scan(ctx(), comp, { euvd: false, epss: false, vex: [{ ids: ['CVE-2023-44487'], products: ['pkg:deb/debian/nghttp2'], status: 'not_affected', justification: 'vulnerable_code_not_present', unresolved: false }] });
+  assert.deepEqual(v.findings.map((x) => x.records), [['DSA-9999-1']], 'it does not speak for an advisory that fixes another CVE too');
+  assert.deepEqual(v.suppressed.map((x) => x.records), [['DEBIAN-CVE-2023-44487']]);
 });
 
 test('scan: a derivative is looked up as its parent, approximately: a lasting gap', async () => {
@@ -261,4 +390,26 @@ test('scan: a derivative is looked up as its parent, approximately: a lasting ga
   assert.match(src.note, /raspbian as Debian:12/);
   assert.equal(r.complete, false);
   assert.equal(r.answered, true);
+});
+
+test('scan: two advisories that fix the same CVE both stay, whatever their order; vendor ratings are read from the summary', async () => {
+  const purl = 'pkg:rpm/almalinux/zlib@1.2.11-40.el9?distro=almalinux-9.3';
+  const adv = (id, summary, cves, fixed) => ({ id, summary, upstream: cves, affected: [{ package: { ecosystem: 'AlmaLinux:9', name: 'zlib' }, ranges: [{ type: 'ECOSYSTEM', events: [{ introduced: '0' }, { fixed }] }] }] });
+  const records = { 'ALSA-2026:0001': adv('ALSA-2026:0001', 'Important: zlib security update', ['CVE-2026-0001', 'CVE-2026-0002'], '1.2.11-41.el9'), 'ALSA-2026:0002': adv('ALSA-2026:0002', 'Low: zlib security update', ['CVE-2026-0002'], '1.2.11-45.el9') };
+  for (const order of [['ALSA-2026:0001', 'ALSA-2026:0002'], ['ALSA-2026:0002', 'ALSA-2026:0001']]) {
+    const base = fakeFetch();
+    const fetchJson = async (url, opts = {}) => {
+      if (url.endsWith('/querybatch')) return { status: 200, json: { results: opts.body.queries.map(() => ({ vulns: order.map((id) => ({ id, modified: 'm' })) })) } };
+      const m = /\/vulns\/(.+)$/.exec(url);
+      if (m) { const d = records[decodeURIComponent(m[1])]; return d ? { status: 200, json: d } : { status: 404, json: null }; }
+      return base(url, opts);
+    };
+    const r = await scan({ fetchJson, cache: memoryCache(), now: () => new Date('2026-11-07T10:00:00Z') }, [{ type: 'rpm', name: 'zlib', version: '1.2.11-40.el9', purl, scope: 'required', sources: ['s'] }], { euvd: false, epss: false });
+    const by = Object.fromEntries(r.findings.map((f) => [f.records[0], f]));
+    assert.deepEqual(Object.keys(by).sort(), ['ALSA-2026:0001', 'ALSA-2026:0002']);
+    assert.deepEqual(by['ALSA-2026:0002'].fixed, ['1.2.11-45.el9']);
+    assert.deepEqual(by['ALSA-2026:0001'].ids, ['ALSA-2026:0001', 'CVE-2026-0001', 'CVE-2026-0002']);
+    assert.equal(by['ALSA-2026:0001'].severity, 'high');
+    assert.equal(by['ALSA-2026:0002'].severity, 'low');
+  }
 });

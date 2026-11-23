@@ -1,7 +1,7 @@
 // Container images and firmware root filesystems: archives built here, in memory, then read back.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -112,7 +112,7 @@ test('a container image saved with docker save: layers in order, whiteouts, an A
     { path: 'usr/lib/node_modules/.wh.old-tool', data: '' },
     { path: 'srv/a/.wh..wh..opq', data: '' },
     { path: 'srv/a/node_modules/kept/package.json', data: JSON.stringify({ name: 'kept', version: '2.0.0' }) },
-    { path: 'var/lib/rpm/rpmdb.sqlite', data: 'SQLite format 3\0' },
+    { path: 'var/lib/rpm/Packages', data: 'berkeley' },
   ]));
   const archive = tar([
     { path: 'manifest.json', data: JSON.stringify([{ Config: 'config.json', RepoTags: ['acme/gateway:4.2.0'], Layers: ['l1/layer.tar', 'l2/layer.tar'] }]) },
@@ -128,7 +128,7 @@ test('a container image saved with docker save: layers in order, whiteouts, an A
   assert.ok(!purls.some((x) => x.includes('old-tool')), 'deleted by a whiteout in a later layer');
   assert.ok(!purls.some((x) => x.includes('/left@')), 'hidden by an opaque directory');
   assert.ok(purls.includes('pkg:npm/kept@2.0.0'));
-  assert.ok(r.notices.some((n) => /RPM package databases are not read yet/.test(n.text) && n.incomplete), 'RPM databases are named, not silently skipped, and the result is incomplete');
+  assert.ok(r.notices.some((n) => /RPM package databases in this format \(Berkeley DB, ndb\) are not read yet/.test(n.text) && n.incomplete), 'RPM databases in an older format are named, not silently skipped, and the result is incomplete');
 });
 
 test('an OCI image layout in one tar, through a multi-platform index', async () => {
@@ -172,4 +172,70 @@ test('OSV: operating-system packages are looked up by ecosystem and release, wit
 
 test('not an archive: a clear error', async () => {
   await assert.rejects(readImage(file('notes.txt', 'hello')), /neither a tar archive/);
+});
+
+test('an RPM database in its SQLite form is read: names, epochs, source packages; keys are not packages', async () => {
+  const db = readFileSync(new URL('./fixtures/rpm/rpmdb.sqlite', import.meta.url));
+  const root = (os, extra = []) => gzipSync(tar([{ path: 'etc/os-release', data: os }, { path: 'var/lib/rpm/rpmdb.sqlite', data: db }, ...extra]));
+  const r = await readImage(file('rootfs.tar.gz', root('NAME="Red Hat Enterprise Linux"\nID="rhel"\nVERSION_ID="9.3"\nPRETTY_NAME="Red Hat Enterprise Linux 9.3 (Plow)"\n')));
+  const purls = r.components.map((c) => c.purl);
+  assert.equal(purls.length, 63, 'every package, across interior pages; gpg-pubkey left out');
+  assert.ok(purls.includes('pkg:rpm/redhat/bash@5.1.8-9.el9?arch=x86_64&distro=rhel-9.3&upstream=bash-5.1.8-9.el9.src.rpm'), purls.slice(0, 3).join('\n'));
+  assert.ok(purls.includes('pkg:rpm/redhat/openssl-libs@3.0.7-24.el9?arch=x86_64&distro=rhel-9.3&epoch=1&upstream=openssl-3.0.7-24.el9.src.rpm'));
+  assert.ok(purls.includes('pkg:rpm/redhat/glibc@2.34-60.el9?arch=x86_64&distro=rhel-9.3&upstream=glibc-2.34-60.el9.src.rpm'), 'a header spread over overflow pages');
+  assert.equal(r.components.find((c) => c.name === 'openssl-libs').version, '1:3.0.7-24.el9');
+  assert.ok(!purls.some((p) => p.includes('gpg-pubkey')));
+  assert.deepEqual(r.notices.filter((n) => n.incomplete), [], 'a release whose advisories are read: nothing to say');
+  assert.deepEqual(r.errors, []);
+
+  // A distribution no advisory database covers: listed, and said not to be looked up.
+  const fedora = await readImage(file('rootfs.tar.gz', root('NAME="Fedora Linux"\nID=fedora\nVERSION_ID=40\nPRETTY_NAME="Fedora Linux 40 (Container Image)"\n')));
+  assert.equal(fedora.components.length, 63);
+  assert.ok(fedora.components[0].purl.startsWith('pkg:rpm/fedora/'));
+  assert.ok(fedora.notices.some((n) => n.incomplete && /Fedora Linux 40.*listed but not looked up/.test(n.text)));
+
+  // Changes still in the write-ahead log are not in the file: said.
+  const wal = await readImage(file('rootfs.tar.gz', root('ID=almalinux\nVERSION_ID=9.3\n', [{ path: 'var/lib/rpm/rpmdb.sqlite-wal', data: 'x'.repeat(64) }])));
+  assert.ok(wal.notices.some((n) => n.incomplete && /changes not yet written/.test(n.text)));
+  const emptyWal = await readImage(file('rootfs.tar.gz', root('ID=almalinux\nVERSION_ID=9.3\n', [{ path: 'var/lib/rpm/rpmdb.sqlite-wal', data: '' }])));
+  assert.deepEqual(emptyWal.notices.filter((n) => n.incomplete), []);
+});
+
+test('a damaged RPM database is an error, never a crash or an endless read', async () => {
+  const db = readFileSync(new URL('./fixtures/rpm/rpmdb.sqlite', import.meta.url));
+  const { parseRpmSqlite, parseRpmHeader } = await import('../src/image/rpmdb.js');
+  assert.throws(() => parseRpmSqlite(Buffer.from('SQLite format 3\0'), 'x', null), /not an SQLite database/);
+  assert.throws(() => parseRpmSqlite(db.subarray(0, 4096), 'x', null));
+  assert.throws(() => parseRpmHeader(Buffer.from([0, 0, 0, 9, 0, 0, 0, 1])), /outside/);
+  // Every byte flipped in turn across the structure pages, and random damage: an Error or a list, nothing else.
+  let seed = 12345;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff);
+  for (let i = 0; i < 3000; i++) {
+    const bad = Buffer.from(db);
+    const at = i < 2000 ? 16 + i : rnd() % bad.length;
+    bad[at] = i < 2000 ? bad[at] ^ 0xff : rnd() & 0xff;
+    try {
+      const list = parseRpmSqlite(bad, 'x', { id: 'rhel', versionId: '9.3' });
+      assert.ok(Array.isArray(list.components));
+      assert.equal(list.components.length + list.skipped, 63, 'a list that is shorter says by how much');
+    } catch (e) {
+      assert.ok(e instanceof Error && !(e instanceof assert.AssertionError), String(e));
+    }
+  }
+  // Pages or cells named twice (a few bytes that would otherwise unfold into millions of rows): refused at once.
+  const t0 = Date.now();
+  const bomb = await readImage(new URL('./fixtures/rpm/repeated-pages.tar.gz', import.meta.url).pathname);
+  assert.equal(bomb.components.length, 0);
+  assert.ok(bomb.errors.some((e) => /rpmdb\.sqlite: cannot be read \((page \d+ is used twice|cell used twice|more rows than the file can hold)\)/.test(e.error)), JSON.stringify(bomb.errors));
+  assert.ok(Date.now() - t0 < 2000);
+  // A header without a name: one package fewer, and a notice that says so.
+  const noName = Buffer.from(db);
+  const at = noName.indexOf(Buffer.from('lib07\0'));
+  noName.writeUInt32BE(999999, noName.lastIndexOf(Buffer.from([0, 0, 0x03, 0xe8]), at));   // its NAME tag becomes an unknown tag
+  const short = await readImage(file('rootfs.tar.gz', gzipSync(tar([{ path: 'etc/os-release', data: 'ID=rhel\nVERSION_ID=9.3\n' }, { path: 'var/lib/rpm/rpmdb.sqlite', data: noName }]))));
+  assert.equal(short.components.length, 62);
+  assert.ok(short.notices.some((n) => n.incomplete && /1 entry of the RPM database could not be read/.test(n.text)), JSON.stringify(short.notices));
+  const r = await readImage(file('rootfs.tar.gz', gzipSync(tar([{ path: 'etc/os-release', data: 'ID=rhel\nVERSION_ID=9.3\n' }, { path: 'usr/lib/sysimage/rpm/rpmdb.sqlite', data: db.subarray(0, 2000) }]))));
+  assert.equal(r.components.length, 0);
+  assert.ok(r.errors.some((e) => /rpmdb\.sqlite: cannot be read/.test(e.error)));
 });

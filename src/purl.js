@@ -85,16 +85,87 @@ export function makeOsPurl(type, namespace, name, version, qualifiers = {}) {
 
 const OS_ECOSYSTEM = { debian: 'Debian', ubuntu: 'Ubuntu', alpine: 'Alpine', wolfi: 'Wolfi', chainguard: 'Chainguard' };
 
+// RPM distributions OSV.dev carries advisories for, by the names SBOM tools give them (purl namespace and
+// distro qualifier: "rhel-9.3", "redhat-9.3", "almalinux-9.3", "alma-9.3", "rocky-9.3", "opensuse-leap-15.6"…).
+const RPM_FAMILY = {
+  redhat: 'redhat', rhel: 'redhat',
+  almalinux: 'almalinux', alma: 'almalinux',
+  rocky: 'rocky', 'rocky-linux': 'rocky',
+  'opensuse-leap': 'opensuse-leap', 'opensuse.leap': 'opensuse-leap',
+  mageia: 'mageia',
+};
+const RPM_BASE = { redhat: 'Red Hat', almalinux: 'AlmaLinux', rocky: 'Rocky Linux', 'opensuse-leap': 'openSUSE', mageia: 'Mageia' };
+
+/** The source package in an RPM purl's upstream qualifier: { name, version } from "openssl-3.0.7-27.el9.src.rpm" (version "3.0.7-27.el9"). */
+function rpmSource(upstream) {
+  const m = /^(.+)-([^-]+-[^-]+)\.src\.rpm$/.exec(String(upstream ?? '').trim());
+  return m ? { name: m[1], version: m[2] } : null;
+}
+
+// Releases OSV.dev carries advisories for: another one would come back empty and look clean.
+const RPM_RELEASES = {
+  redhat: /^[89]$/,              // later majors are filed per minor release, which a purl does not always give
+  almalinux: /^(8|9|10)$/,
+  rocky: /^(8|9|10)$/,
+  mageia: /^(8|9|10)$/,
+};
+// Red Hat keeps one ecosystem per repository.
+const RHEL_REPOS = { 8: ['baseos', 'appstream', 'crb', 'highavailability', 'resilientstorage', 'supplementary'], 9: ['baseos', 'appstream', 'crb', 'highavailability', 'resilientstorage', 'nfv', 'realtime'] };
+// Whose advisories name the source package, always or often: without it, a binary package cannot be asked about.
+const RPM_BY_SOURCE = new Set(['rocky', 'opensuse-leap', 'mageia']);
+
+/**
+ * An RPM package as OSV.dev's advisories name it. They are the distribution's own advisories (Red Hat,
+ * AlmaLinux, Rocky Linux, openSUSE Leap, Mageia), which exist once a fix is published: a vulnerability
+ * the distribution has not fixed yet is not in them. Red Hat and AlmaLinux name the binary packages;
+ * the others the source package (Rocky Linux: one or the other), which is asked about only when the binary package carries its version
+ * (a subpackage with a version of its own, such as perl-Errno, would never compare right).
+ * Null (not looked up, and said so) when that cannot be done honestly: no release, a release OSV does not
+ * carry, a module stream (its advisories cover every stream of the module), no usable source package.
+ */
+function osvRpmPackage(p, purl) {
+  const q = purlQualifiers(purl);
+  const ns = (p.namespace ?? '').toLowerCase();
+  const m = /^([a-z][a-z.-]*?)-(\d[\w.]*)$/.exec(String(q.distro ?? '').toLowerCase());
+  if (!m) return null;
+  const family = RPM_FAMILY[m[1]];
+  if (!family) return null;
+  // A namespace of another known family contradicts the release: not looked up rather than guessed.
+  if (RPM_FAMILY[ns] && RPM_FAMILY[ns] !== family) return null;
+  if (/\.module[+_]el/.test(p.version)) return null;
+  const major = m[2].split('.')[0];
+  let ecosystems;
+  if (family === 'opensuse-leap') {
+    if (!/^(15\.[2-6]|16\.0)$/.test(m[2])) return null;
+    ecosystems = [`openSUSE:Leap ${m[2]}`];
+  } else {
+    if (!RPM_RELEASES[family].test(major)) return null;
+    ecosystems = family === 'redhat' ? RHEL_REPOS[major].map((repo) => `Red Hat:enterprise_linux:${major}::${repo}`) : [`${RPM_BASE[family]}:${major}`];
+  }
+  const epoch = /^\d+$/.test(String(q.epoch ?? '')) && q.epoch !== '0' ? q.epoch : '';
+  const version = epoch && !/^\d+:/.test(p.version) ? `${epoch}:${p.version}` : p.version;
+  const src = rpmSource(q.upstream);
+  const source = src && src.version === p.version.replace(/^\d+:/, '') ? src.name : '';
+  if (RPM_BY_SOURCE.has(family) && !source) return null;
+  const names = [...new Set([p.name, source].filter(Boolean))];
+  // `family` is the purl's own namespace when it is one of the family's names, so that only a real
+  // derivative (another namespace, looked up as its parent's release) is reported as approximate.
+  return { ecosystem: ecosystems[0], ecosystems, base: RPM_BASE[family], family: RPM_FAMILY[ns] === family ? ns : family, name: names[0], names, version };
+}
+
 /**
  * How OSV.dev names the ecosystem of an operating-system package, with its release ("Debian:12",
- * "Ubuntu:22.04:LTS", "Alpine:v3.19", "Wolfi"), and the package name and version advisories use (the
- * source package for Debian and Ubuntu, from the `upstream` qualifier: "openssl" or "zlib@1:1.2.13.dfsg-1").
+ * "Ubuntu:22.04:LTS", "Alpine:v3.19", "Wolfi", "AlmaLinux:9"), and the package name and version advisories
+ * use (the source package for Debian and Ubuntu, from the `upstream` qualifier: "openssl" or
+ * "zlib@1:1.2.13.dfsg-1"). `ecosystems` and `names` list every spelling to ask (more than one for RPM).
  * A derivative (pkg:deb/raspbian/…?distro=debian-12) is looked up as the release its distro qualifier names.
  * Null for other purls, or when the release is unknown.
  */
 export function osvOsPackage(purl) {
   const p = parsePurl(purl);
-  if (!p || !p.version || !['deb', 'apk'].includes(p.type)) return null;
+  if (!p || !p.version) return null;
+  if (p.type === 'rpm') return osvRpmPackage(p, purl);
+  if (!['deb', 'apk'].includes(p.type)) return null;
   const ns = (p.namespace ?? '').toLowerCase();
   const q = purlQualifiers(purl);
   const distro = String(q.distro ?? '');
@@ -121,7 +192,7 @@ export function osvOsPackage(purl) {
   const at = up.indexOf('@');
   const name = (at > 0 ? up.slice(0, at) : up) || p.name;
   const version = at > 0 ? up.slice(at + 1) : p.version;
-  return { ecosystem, base: OS_ECOSYSTEM[family], family, name, version };
+  return { ecosystem, ecosystems: [ecosystem], base: OS_ECOSYSTEM[family], family, name, names: [name], version };
 }
 
 /** Whether OSV.dev can be asked about a purl: operating-system packages only with a release it covers. */

@@ -93,11 +93,15 @@ test('SPDX 3 reader: other shapes (full IRIs, single values instead of arrays, i
     { type: 'software_Package', spdxId: 'urn:p1', name: 'a', externalIdentifier: { type: 'ExternalIdentifier', externalIdentifierType: 'packageUrl', identifier: 'pkg:npm/a@1.0.0' }, verifiedUsing: { type: 'Hash', algorithm: `${T}Core/HashAlgorithm/sha256`, hashValue: 'ab' } },
     { type: 'software_Package', spdxId: 'urn:p2', name: 'b', software_packageUrl: 'pkg:npm/b@2.0.0', verifiedUsing: {} },
     { type: 'software_Package', spdxId: 'urn:p3', name: 'c', software_packageUrl: 42, externalIdentifier: {} },
+    // The AI and Dataset profiles: a model and a dataset are packages, kept when their package URL has a version.
+    { type: 'ai_AIPackage', spdxId: 'urn:m1', name: 'whisper-tiny', software_packageUrl: 'pkg:huggingface/openai/whisper-tiny@169d4a4341b33bc18d8881c4b69c2e104e1cc0af' },
+    { type: `${T}Dataset/DatasetPackage`, spdxId: 'urn:d1', name: 'common_voice', externalIdentifier: [{ type: 'ExternalIdentifier', externalIdentifierType: 'packageUrl', identifier: 'pkg:huggingface/mozilla-foundation/common_voice@1.0' }] },
+    { type: 'ai_AIPackage', spdxId: 'urn:m2', name: 'no-version', software_packageUrl: 'pkg:huggingface/acme/model' },
     { type: 'LifecycleScopedRelationship', spdxId: 'urn:r', from: 'urn:x', relationshipType: `${T}Core/RelationshipType/dependsOn`, scope: `${T}Core/LifecycleScopeType/test`, to: 'urn:p2', completeness: 'incomplete' },
     null, 'junk',
   ] };
   const back = readSbom(doc);
   assert.equal(back.specVersion, 'SPDX-3.0.1');
-  assert.deepEqual(back.components.map((c) => [c.purl, c.scope, c.hashes.length]), [['pkg:npm/a@1.0.0', 'required', 1], ['pkg:npm/b@2.0.0', 'dev', 0]]);
+  assert.deepEqual(back.components.map((c) => [c.purl, c.scope, c.hashes.length]), [['pkg:npm/a@1.0.0', 'required', 1], ['pkg:npm/b@2.0.0', 'dev', 0], ['pkg:huggingface/openai/whisper-tiny@169d4a4341b33bc18d8881c4b69c2e104e1cc0af', 'required', 0], ['pkg:huggingface/mozilla-foundation/common_voice@1.0', 'required', 0]]);
   assert.equal(back.notices.length, 1);
 });

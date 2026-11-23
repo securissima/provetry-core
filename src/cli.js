@@ -27,7 +27,8 @@ Usage
   provetry sbom  [dir|image.tar]  Write an SBOM from the lock files found in dir (default: .), or from a
                                   container image (docker save, podman save, OCI layout) or a firmware root
                                   filesystem archive (rootfs.tar, .tar.gz, .tar.zst): Debian, Ubuntu, Alpine,
-                                  Wolfi and Chainguard packages, opkg packages, Python and Node.js packages,
+                                  Wolfi and Chainguard packages, RPM packages (SQLite database), opkg packages,
+                                  Python and Node.js packages,
                                   lock files
   provetry scan  [dir|sbom.json|image.tar]  List known vulnerabilities, those exploited in the wild first
   provetry reach [dir]            Which vulnerable code your product really uses: function by function for Go

@@ -19,7 +19,7 @@ inputs:
     description: "A container image to describe instead of the lock files: an image name (pulled if needed, then saved with docker save), e.g. ghcr.io/acme/gateway:2.4.0, or the path of an image archive or of a firmware root filesystem archive (rootfs.tar, .tar.gz, .tar.zst)."
     default: ""
   image-tool:
-    description: "Who reads the image: provetry (the default: Debian, Ubuntu, Alpine, Wolfi, opkg packages, Python and Node.js packages, lock files; no Docker daemon needed for an archive) or syft (the generator used before 0.10: also RPM databases, Java archives and Go binaries; RPM packages are not looked up yet, so a fail-on gate on an RPM image exits incomplete)."
+    description: "Who reads the image: provetry (the default: Debian, Ubuntu, Alpine, Wolfi, RPM (SQLite database) and opkg packages, Python and Node.js packages, lock files; no Docker daemon needed for an archive) or syft (the generator used before 0.10: also the older RPM database formats, Java archives and Go binaries)."
     default: provetry
   platform:
     description: "The platform to read from a multi-platform image, e.g. linux/arm64 (default: linux/amd64)."
@@ -129,7 +129,7 @@ runs:
         fi
         node "$GITHUB_ACTION_PATH/src/cli.js" sbom "$archive" ${plat[@]+"${plat[@]}"} --name "$P_NAME" --version "$P_VERSION" --out "$P_OUT"
 
-    # The generator used before 0.10, kept for what Provetry does not read yet (RPM, Java archives, Go binaries).
+    # The generator used before 0.10, kept for what Provetry does not read yet (older RPM database formats, Java archives, Go binaries).
     - name: Install Syft
       if: inputs.image != '' && inputs.image-tool == 'syft'
       id: syft

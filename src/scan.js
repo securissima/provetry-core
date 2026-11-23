@@ -2,7 +2,7 @@
 // Puts it together: components (from lock files or an SBOM) → known vulnerabilities (OSV) → which of them are
 // exploited in the wild (CISA KEV, ENISA EUVD) → how likely the others are to be (FIRST EPSS) → your VEX
 // statements → a prioritized list.
-import { queryPurls, loadDetails, groupRecords, severityOf, fixedVersions, affectedFunctions } from './vuln/osv.js';
+import { queryPurls, loadDetails, groupRecords, severityOf, fixedVersions, affectedFunctions, upstreamCves } from './vuln/osv.js';
 import { loadKev } from './vuln/kev.js';
 import { loadEuvdExploited } from './vuln/euvd.js';
 import { loadEpss, epssOf, EPSS_LIKELY } from './vuln/epss.js';
@@ -10,6 +10,7 @@ import { vexFor } from './vex.js';
 import { osvQueryable, osvOsPackage } from './purl.js';
 
 const RANK = { critical: 4, high: 3, medium: 2, low: 1, none: 0, unknown: 0 };
+const MAX_CVE_LOOKUPS = 300;
 
 /**
  * @param {object} ctx { fetchJson, cache, offline?, now? }
@@ -33,7 +34,7 @@ export async function scan(ctx, components, opts = {}) {
   }
   const unlooked = scanned.filter((c) => !osvQueryable(c.purl));
   // A lasting gap, not a source that failed to answer: trying again changes nothing.
-  if (unlooked.length) sources.push({ name: 'Operating-system packages', ok: false, lasting: true, note: `${unlooked.length} not looked up: no public advisory database covers their release (e.g. ${unlooked[0].purl.split('?')[0]})` });
+  if (unlooked.length) sources.push({ name: 'Operating-system packages', ok: false, lasting: true, note: `${unlooked.length} not looked up: no advisory database read here covers their release or packaging (e.g. ${unlooked[0].purl.split('?')[0]})` });
   // A derivative's packages (pkg:deb/raspbian/…?distro=debian-12) are looked up as its parent's: approximate,
   // as its own packages are not covered and its rebuilt versions compare only roughly with the parent's fixes.
   const derived = scanned.filter((c) => { const os = osvQueryable(c.purl) && osvOsPackage(c.purl); return os && os.family !== String(c.purl).split('/')[1]?.toLowerCase(); });
@@ -44,6 +45,16 @@ export async function scan(ctx, components, opts = {}) {
   const refs = [...affected.values()].flat();
   const details = await loadDetails(ctx, refs);
   const missingDetails = new Set(refs.map((r) => r.id).filter((id) => !details.has(id)));
+  // Some distribution advisories (openSUSE, Mageia) carry no severity of their own: the
+  // CVE records they fix do. Only a ranking aid: one that cannot be fetched leaves the severity unknown.
+  // Capped: an image has thousands of advisories, and each CVE is one request.
+  const allUnrated = [...new Set([...details.values()].filter((r) => severityOf(r).rating === 'unknown').flatMap(upstreamCves).filter((id) => !details.has(id)))];
+  const unrated = allUnrated.slice(0, MAX_CVE_LOOKUPS);
+  const cveDetails = unrated.length ? await loadDetails(ctx, unrated.map((id) => ({ id, modified: '' }))) : new Map();
+  // Past the cap, advisories stay unrated, below any --fail-on threshold: said, not silent. (A CVE that OSV
+  // does not have leaves its advisory unrated too, as any advisory without a rating is.)
+  const unfetched = allUnrated.length - unrated.length;
+  if (unfetched) sources.push({ name: 'Severity of distribution advisories', ok: false, lasting: true, note: `${unfetched} CVE${unfetched > 1 ? 's' : ''} not read: the advisories that fix them may be unrated` });
 
   let kev = new Map();
   try {
@@ -64,7 +75,7 @@ export async function scan(ctx, components, opts = {}) {
 
   let epss = new Map();
   if (withEpss) {
-    const cves = [...details.values()].flatMap((r) => [r.id, ...(r.aliases ?? [])]);
+    const cves = [...details.values()].flatMap((r) => [r.id, ...(r.aliases ?? []), ...upstreamCves(r)]);
     try {
       epss = await loadEpss(ctx, cves);
       // Partial: some scores are unknown (a batch failed); keepers of earlier scores should keep them.
@@ -80,8 +91,22 @@ export async function scan(ctx, components, opts = {}) {
   for (const c of scanned) {
     const list = affected.get(c.purl) ?? [];
     const records = list.map((r) => details.get(r.id) ?? { id: r.id, aliases: [], summary: '' });
-    for (const g of groupRecords(records)) {
-      const sev = g.records.map(severityOf).sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || RANK[b.rating] - RANK[a.rating])[0];
+    const groups = groupRecords(records);
+    // The CVEs that have a record of their own for this component (DEBIAN-CVE-…, UBUNTU-CVE-…).
+    const ownCves = new Set(groups.flatMap((g) => g.ids));
+    for (const g of groups) {
+      // The CVEs an advisory fixes are identifiers to match on (exploited lists, EPSS, VEX), after its own.
+      // Those with a record of their own are reported there, once: a distribution advisory (DSA, USN)
+      // that fixes nothing else says nothing more than those records.
+      const fixed = [...new Set(g.records.flatMap(upstreamCves))].filter((id) => !g.ids.includes(id));
+      const fixes = fixed.filter((id) => !ownCves.has(id));
+      if (fixed.length && !fixes.length) continue;
+      // A statement about one CVE does not speak for an advisory that fixes several.
+      const vexIds = fixes.length === 1 ? [...g.ids, ...fixes] : g.ids;
+      g.ids = [...g.ids, ...fixes];
+      const bySeverity = (a, b) => (b.score ?? -1) - (a.score ?? -1) || RANK[b.rating] - RANK[a.rating];
+      let sev = g.records.map(severityOf).sort(bySeverity)[0];
+      if (sev.rating === 'unknown') sev = [sev, ...fixes.map((id) => cveDetails.get(id) ?? details.get(id)).filter(Boolean).map(severityOf)].sort(bySeverity)[0];
       const kevId = g.ids.find((id) => kev.has(id));
       const euId = g.ids.find((id) => eu.has(id));
       const kevHit = kevId ? kev.get(kevId) : null;
@@ -107,7 +132,7 @@ export async function scan(ctx, components, opts = {}) {
         url: `https://osv.dev/vulnerability/${encodeURIComponent(g.records[0].id)}`,
         vex: null,
       };
-      const st = vexFor(vex, finding);
+      const st = vexFor(vex, { ...finding, ids: vexIds });
       if (st) finding.vex = { status: st.status, justification: st.justification };
       (st && (st.status === 'not_affected' || st.status === 'fixed') ? suppressed : findings).push(finding);
     }
