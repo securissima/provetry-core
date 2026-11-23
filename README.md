@@ -240,8 +240,8 @@ jobs:
         with:
           go-version: stable
       - id: provetry
-        # Pinned to a commit (version 0.10.1): this code receives your API key.
-        uses: securissima/provetry-core@f7c4204201c14c9beb507a09beef3e072e33d70c
+        # Pinned to a commit (version 0.11.0): this code receives your API key.
+        uses: securissima/provetry-core@5698eac15f95122b2757159921a3d0373a6bc7ff
         with:
           fail-on: exploited
           # Optional: upload each release to Provetry (API key from Settings, product id from its page).
@@ -260,7 +260,7 @@ The version is the tag (`v2.4.0` becomes `2.4.0`). Uploads happen on tags only (
 
 ```yaml
 include:
-  # Pinned to a commit (version 0.10.1), like the action: a branch can change, a commit cannot.
+  # Pinned to a commit (version 0.11.0), like the action: a branch can change, a commit cannot.
   - remote: https://raw.githubusercontent.com/securissima/provetry-core/11fc205d8fa2f7df6e7e3816b05340d2521ea6f4/ci/provetry.gitlab-ci.yml
 ```
 
